@@ -333,6 +333,14 @@ async function callClaude(systemPrompt, userPrompt) {
     }),
   });
   const data = await response.json();
+  if (data && data.rateLimited) {
+    const err = new Error("AI provider is rate-limited right now.");
+    err.rateLimited = true;
+    throw err;
+  }
+  if (response.status >= 400) {
+    throw new Error((data && data.error) || `AI request failed (${response.status})`);
+  }
   const text = (data.content || [])
     .map((b) => (b.type === "text" ? b.text : ""))
     .join("\n")
@@ -1258,6 +1266,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   const [typedCode, setTypedCode] = useState("");
   const [autopilotOn, setAutopilotOn] = useState(true);
   const [ttsNotice, setTtsNotice] = useState("");
+  const [aiNotice, setAiNotice] = useState("");
   const [audioBlocked, setAudioBlocked] = useState(false);
 
   const recognitionRef = useRef(null);
@@ -1464,16 +1473,34 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
     [settings.voiceProvider, settings.elevenLabsApiKey, settings.elevenLabsVoiceId]
   );
 
+  // Every spoken AI call goes through here instead of callClaude directly,
+  // so a rate limit or provider error surfaces as a visible notice (and a
+  // sensible spoken fallback line) instead of the lecturer just going
+  // quiet or saying something generic with no explanation why.
+  const askLecturer = useCallback(async (system, prompt, fallback) => {
+    try {
+      const text = await callClaude(system, prompt);
+      if (text) setAiNotice("");
+      return text || fallback;
+    } catch (e) {
+      setAiNotice(
+        e && e.rateLimited
+          ? "The AI lecturer is getting a lot of requests right now — using a fallback line until it clears up."
+          : "Had trouble reaching the AI lecturer just now — using a fallback line."
+      );
+      return fallback;
+    }
+  }, []);
+
   const generateExplanation = useCallback(
     async (targetSlide) => {
       const system = `You are ${lecturerIdentity}. You are mid-lecture, speaking out loud to a room of students. Keep this explanation to about ${wordBudget} words. ${NATURAL_SPEECH_STYLE}`;
       const prompt = targetSlide.hasCode
         ? `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes} You are about to type this code live on screen while you talk: ${targetSlide.code} Narrate it roughly in the order it will be typed, top to bottom, like you're writing it in front of the class.`
         : `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}`;
-      const text = await callClaude(system, prompt);
-      return text || "Sorry, I lost my train of thought for a moment — let's continue.";
+      return askLecturer(system, prompt, "Sorry, I lost my train of thought for a moment — let's continue.");
     },
-    [lecturerIdentity, wordBudget]
+    [lecturerIdentity, wordBudget, askLecturer]
   );
 
   // Teaches one slide end-to-end: switches to the right view, explains it
@@ -1519,9 +1546,13 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       const checkSystem = `You are ${lecturerIdentity}. In one short, warm sentence, check whether the student followed what you just covered${
         isLast ? ", and let them know that wraps up today's material" : `, before moving on to "${curriculum.slides[index + 1].title}"`
       }. ${NATURAL_SPEECH_STYLE}`;
-      const checkText = await callClaude(checkSystem, `You just finished explaining "${targetSlide.title}".`);
+      const checkText = await askLecturer(
+        checkSystem,
+        `You just finished explaining "${targetSlide.title}".`,
+        isLast ? "That's everything for today — nicely done!" : "Does that make sense so far?"
+      );
       if (!mountedRef.current) return;
-      const safeCheck = checkText || (isLast ? "That's everything for today — nicely done!" : "Does that make sense so far?");
+      const safeCheck = checkText;
       addMessage("lecturer", safeCheck, "explain");
       setLecturerState2("explaining");
       const checkCompleted = await speakInterruptible(safeCheck);
@@ -1530,7 +1561,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       setLecturerState2("idle");
       if (!isLast) await sleep(900);
     },
-    [curriculum, generateExplanation, speakInterruptible, animateTyping, lecturerIdentity]
+    [curriculum, generateExplanation, speakInterruptible, animateTyping, lecturerIdentity, askLecturer]
   );
 
   const runIntro = useCallback(async () => {
@@ -1540,9 +1571,9 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       Math.round(wordBudget * 0.7)
     )} words. ${NATURAL_SPEECH_STYLE}`;
     const prompt = `Course: ${curriculum.code} — ${curriculum.title}. Today's topics in order: ${curriculum.slides.map((s) => s.title).join(", ")}.`;
-    const text = await callClaude(system, prompt);
+    const text = await askLecturer(system, prompt, `Welcome, ${studentName}! Today we're covering ${curriculum.unit}.`);
     if (!mountedRef.current) return;
-    const safeText = text || `Welcome, ${studentName}! Today we're covering ${curriculum.unit}.`;
+    const safeText = text;
     addMessage("lecturer", safeText, "explain");
     setLecturerState2("explaining");
     const completed = await speakInterruptible(safeText);
@@ -1551,7 +1582,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
     setLecturerState2("idle");
     await sleep(500);
     introDoneRef.current = true;
-  }, [lecturerIdentity, studentName, curriculum, wordBudget, speakInterruptible]);
+  }, [lecturerIdentity, studentName, curriculum, wordBudget, speakInterruptible, askLecturer]);
 
   const runAutopilot = useCallback(async () => {
     if (!introDoneRef.current) {
@@ -1587,9 +1618,9 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       const answerBudget = Math.max(45, Math.round(wordBudget * 0.6));
       const system = `You are ${lecturerIdentity}. A student just raised their hand and asked a question mid-lecture. Answer it directly and briefly (about ${answerBudget} words). If you were mid-explanation, don't restate everything — just answer, then briefly say you'll continue the lecture. ${NATURAL_SPEECH_STYLE}`;
       const prompt = `You were covering: "${slide.title}" (${slide.notes}). The student asks: "${questionText}"`;
-      const answer = await callClaude(system, prompt);
+      const answer = await askLecturer(system, prompt, "Good question — let me pick that up right after this.");
       if (!mountedRef.current) return;
-      const safeAnswer = answer || "Good question — let me pick that up right after this.";
+      const safeAnswer = answer;
       addMessage("lecturer", safeAnswer, "answer");
       setLecturerState2("answering");
       await speakInterruptible(safeAnswer);
@@ -1597,7 +1628,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       setLecturerState2("idle");
       setHandRaised(false);
     },
-    [studentName, slide, lecturerIdentity, wordBudget, speakInterruptible, stopSpeaking]
+    [studentName, slide, lecturerIdentity, wordBudget, speakInterruptible, stopSpeaking, askLecturer]
   );
 
   const continueTypingCode = useCallback(() => {
@@ -1759,6 +1790,11 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       {ttsNotice && (
         <div className={`tts-notice ${audioBlocked ? "clickable" : ""}`} onClick={audioBlocked ? enableAudio : undefined}>
           <AlertTriangle size={12} /> {ttsNotice}
+        </div>
+      )}
+      {aiNotice && (
+        <div className="tts-notice">
+          <AlertTriangle size={12} /> {aiNotice}
         </div>
       )}
 

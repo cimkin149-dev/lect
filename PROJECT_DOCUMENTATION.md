@@ -179,24 +179,31 @@ Full step-by-step commands are in `README.md` in the project package.
 course/module data model and dashboard, full ingestion pipeline (PPTX/PDF/text,
 dependency-free), AI curriculum generation and editing, autopilot delivery with
 interruption handling, ElevenLabs + browser voice with autoplay-policy
-mitigation, complete screen navigation, Supabase persistence (Anthropic-only
-proxy path).
+mitigation, complete screen navigation, Supabase persistence — connected to a
+live project with `courses`/`modules` tables actually created and verified via
+direct database access (not just handed off as SQL to run manually).
 
-**Designed and discussed, but not yet finalized/re-saved after an interrupted
-work session (in progress, not yet in the downloadable files as of this
-document):**
-- Swapping the AI proxy to support Google Gemini's free tier (as a cost-free
-  alternative to a paid Anthropic key), with Anthropic kept as a fallback
-  option rather than removed.
-- Graceful in-app handling for AI rate-limit errors (a visible "the AI is
-  busy, one moment" notice instead of the lecturer just going quiet).
-- Full PWA conversion (installable manifest, icons, service worker) for
-  GitHub + Netlify deployment.
-
-These will be completed and re-delivered as updated files next.
+Also now finished and build-verified (`npm run build` succeeds, service worker
+and manifest generate correctly):
+- **Multi-provider AI proxy** — the Supabase Edge Function supports Gemini
+  (free tier, default if configured) or Anthropic (fallback), normalizing
+  both providers' responses to one shape so the client code doesn't need to
+  know which is answering.
+- **Graceful AI rate-limit handling** — every AI call in the room now routes
+  through a shared `askLecturer` wrapper that catches rate-limit/provider
+  errors and shows a visible notice ("the AI lecturer is getting a lot of
+  requests right now...") with a sensible spoken fallback line, instead of
+  the lecturer silently going quiet.
+- **PWA conversion** — installable manifest, app icons, and a service worker
+  via `vite-plugin-pwa`; app-shell assets cache for fast reloads. AI, voice,
+  and database calls still need a live connection regardless — there's no
+  "offline lecture" mode, only install + fast load.
 
 **Deliberately not built yet (scoped out, not forgotten):**
-- Lecturer authentication and per-owner RLS scoping (see Security Posture).
+- Lecturer authentication and per-owner RLS scoping (see Security Posture) —
+  the live database's RLS policies are still wide open (any anon-key holder
+  can read/write any course or module), which is the single biggest thing to
+  fix before more than one real lecturer uses this.
 - Multi-student real-time synchronized classrooms — the current architecture
   is single-student-per-session; true shared classrooms need a different,
   server-synced state model, not an incremental add-on.
@@ -204,3 +211,4 @@ These will be completed and re-delivered as updated files next.
   typed, not actually run).
 - Lecturer-facing session analytics/summaries after a lecture ends.
 - Confidence scoring / escalation to a human lecturer when the AI is unsure.
+
