@@ -21,7 +21,15 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 // gemini-2.5-flash-lite has the highest free-tier request limits of the
 // current models if you're hitting quota often; swap in "gemini-2.5-flash"
 // for noticeably better quality at a lower daily/per-minute allowance.
-const GEMINI_MODEL = "gemini-2.5-flash";
+// gemini-2.5-flash (the original default here) is scheduled to shut down
+// October 16, 2026 — moved to the current 3.5 line instead. Flash-Lite is
+// the cost/latency-optimized variant, a good fit for a free-tier app doing
+// many small requests; swap in "gemini-3.6-flash" for noticeably better
+// quality at higher cost and lower free-tier headroom. Check
+// https://ai.google.dev/gemini-api/docs/models for the current lineup
+// before you rely on either long-term — Google ships new Flash versions
+// every few months and deprecates old ones on a similar cadence.
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
 const corsHeaders = {
