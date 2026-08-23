@@ -1,0 +1,56 @@
+-- LectureI persistence schema
+-- Run this once in your Supabase project's SQL editor (Dashboard > SQL Editor > New query).
+
+create table if not exists courses (
+  id text primary key,                          -- generated client-side, e.g. "course-1721..."
+  code text not null,
+  title text not null,
+  institution text,
+  tone text not null default 'conversational',
+  voice_provider text not null default 'browser',
+  elevenlabs_voice_id text,                      -- ok to store: not a secret
+  created_at timestamptz not null default now()
+  -- NOTE: no elevenlabs_api_key column on purpose. Course rows are public
+  -- read (students need them to browse for a session to join), so a secret
+  -- key stored here would be exposed to every visitor. The app keeps that
+  -- key local to the lecturer's browser tab instead.
+);
+
+create table if not exists modules (
+  id text primary key,                           -- generated client-side, e.g. "module-1721..."
+  course_id text not null references courses(id) on delete cascade,
+  unit text not null,
+  duration_minutes int not null default 45,
+  pace text not null default 'standard',
+  allow_live_code boolean not null default true,
+  slides jsonb not null,                          -- the full slide array (title/bullets/notes/code per slide)
+  created_at timestamptz not null default now()
+);
+
+alter table courses enable row level security;
+alter table modules enable row level security;
+
+-- ---------------------------------------------------------------------
+-- PROTOTYPE-ONLY POLICIES. These allow anyone holding the public anon key
+-- (i.e. anyone who's loaded the app) to read AND write every course and
+-- module. That's fine for a personal build or a demo, but it means any
+-- visitor could edit or delete another lecturer's content. Before this is
+-- used with real, separate lecturer accounts, add Supabase Auth and
+-- replace the write policies below with ones scoped to auth.uid(), e.g.:
+--
+--   create table courses (... , owner_id uuid references auth.users default auth.uid());
+--   create policy "owners can write their own courses" on courses
+--     for insert with check (owner_id = auth.uid());
+--   create policy "owners can update their own courses" on courses
+--     for update using (owner_id = auth.uid());
+--
+-- and similarly scope `modules` writes through their parent course's
+-- owner_id. Reads can stay public so students can still browse and join.
+-- ---------------------------------------------------------------------
+
+create policy "public read courses" on courses for select using (true);
+create policy "public write courses" on courses for insert with check (true);
+create policy "public update courses" on courses for update using (true);
+
+create policy "public read modules" on modules for select using (true);
+create policy "public write modules" on modules for insert with check (true);
