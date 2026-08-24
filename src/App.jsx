@@ -220,12 +220,17 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const supabaseEnabled = () => Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
-async function supabaseRequest(path, options = {}) {
+async function supabaseRequest(path, options = {}, accessToken = null) {
+  // Reads and anonymous writes use the anon key. Authenticated writes (course/
+  // module create/update) need the LECTURER'S OWN session token here instead —
+  // that's what lets Postgres RLS resolve auth.uid() to the right user and
+  // enforce "you can only write your own courses." The anon key alone always
+  // resolves auth.uid() to null, which is why RLS treats it as anonymous.
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     ...options,
     headers: {
       apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${accessToken || SUPABASE_ANON_KEY}`,
       "Content-Type": "application/json",
       Prefer: "return=representation",
       ...(options.headers || {}),
@@ -236,6 +241,86 @@ async function supabaseRequest(path, options = {}) {
     throw new Error(`Supabase request failed (${res.status}): ${text.slice(0, 200)}`);
   }
   return res.status === 204 ? null : res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Supabase Auth (GoTrue) — plain REST calls, same no-SDK approach as the
+// database layer. Email/password only for now; the goal here is just
+// "lecturers are uniquely identified and own their own courses," not a full
+// account system.
+// ---------------------------------------------------------------------------
+async function authRequest(path, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.msg || data.error_description || data.error || `Auth request failed (${res.status})`);
+  }
+  return data;
+}
+
+async function signUpLecturer(email, password) {
+  const data = await authRequest("/signup", { email, password });
+  // If email confirmation is required, Supabase returns a user object with
+  // no access_token yet — the account exists but can't sign in until
+  // confirmed. Both cases are handled by the caller.
+  return data.access_token
+    ? { session: toSession(data), needsConfirmation: false }
+    : { session: null, needsConfirmation: true };
+}
+
+async function signInLecturer(email, password) {
+  const data = await authRequest("/token?grant_type=password", { email, password });
+  return toSession(data);
+}
+
+async function refreshLecturerSession(refreshToken) {
+  const data = await authRequest("/token?grant_type=refresh_token", { refresh_token: refreshToken });
+  return toSession(data);
+}
+
+async function signOutLecturer(accessToken) {
+  try {
+    await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+    });
+  } catch (e) {
+    /* best-effort — clearing local session is what actually matters */
+  }
+}
+
+function toSession(data) {
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    user: { id: data.user.id, email: data.user.email },
+  };
+}
+
+// Session persistence. This only matters for the real deployed app (a
+// browser tab, not the Claude.ai artifact preview, where localStorage isn't
+// available) — wrapped defensively so it degrades to "just sign in again"
+// rather than crashing if storage is blocked or unavailable.
+const SESSION_STORAGE_KEY = "semai_lecturer_session";
+function saveSessionLocally(session) {
+  try {
+    if (session) localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    else localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch (e) {
+    /* storage unavailable — session just won't survive a refresh */
+  }
+}
+function loadSessionLocally() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 async function fetchCoursesFromSupabase() {
@@ -252,6 +337,7 @@ async function fetchCoursesFromSupabase() {
     voiceProvider: c.voice_provider,
     elevenLabsApiKey: "", // deliberately never fetched — see security note above
     elevenLabsVoiceId: c.elevenlabs_voice_id || "",
+    ownerId: c.owner_id || null,
     modules: moduleRows
       .filter((m) => m.course_id === c.id)
       .map((m) => ({
@@ -266,39 +352,48 @@ async function fetchCoursesFromSupabase() {
   }));
 }
 
-async function saveCourseToSupabase(course) {
-  await supabaseRequest("/courses", {
-    method: "POST",
-    headers: { Prefer: "resolution=merge-duplicates,return=representation" },
-    body: JSON.stringify([
-      {
-        id: course.id,
-        code: course.code,
-        title: course.title,
-        institution: course.institution || null,
-        tone: course.tone,
-        voice_provider: course.voiceProvider,
-        elevenlabs_voice_id: course.elevenLabsVoiceId || null,
-      },
-    ]),
-  });
+async function saveCourseToSupabase(course, accessToken) {
+  await supabaseRequest(
+    "/courses",
+    {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify([
+        {
+          id: course.id,
+          code: course.code,
+          title: course.title,
+          institution: course.institution || null,
+          tone: course.tone,
+          voice_provider: course.voiceProvider,
+          elevenlabs_voice_id: course.elevenLabsVoiceId || null,
+          owner_id: course.ownerId,
+        },
+      ]),
+    },
+    accessToken
+  );
 }
 
-async function saveModuleToSupabase(courseId, module) {
-  await supabaseRequest("/modules", {
-    method: "POST",
-    body: JSON.stringify([
-      {
-        id: module.id,
-        course_id: courseId,
-        unit: module.unit,
-        duration_minutes: module.durationMinutes,
-        pace: module.pace,
-        allow_live_code: module.allowLiveCode,
-        slides: module.slides,
-      },
-    ]),
-  });
+async function saveModuleToSupabase(courseId, module, accessToken) {
+  await supabaseRequest(
+    "/modules",
+    {
+      method: "POST",
+      body: JSON.stringify([
+        {
+          id: module.id,
+          course_id: courseId,
+          unit: module.unit,
+          duration_minutes: module.durationMinutes,
+          pace: module.pace,
+          allow_live_code: module.allowLiveCode,
+          slides: module.slides,
+        },
+      ]),
+    },
+    accessToken
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +883,94 @@ function RoleSelectScreen({ onSelectRole }) {
 }
 
 // ---------------------------------------------------------------------------
+// Lecturer authentication — email/password via Supabase Auth REST calls.
+// This is what makes "owner_id = auth.uid()" in the RLS policies mean
+// anything: without a real signed-in user, there's no identity for the
+// database to scope writes to.
+// ---------------------------------------------------------------------------
+function AuthScreen({ onAuthenticated, onBack }) {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [confirmNotice, setConfirmNotice] = useState(false);
+
+  const submit = async () => {
+    if (!email.trim() || !password) {
+      setError("Enter an email and password.");
+      return;
+    }
+    setError("");
+    setConfirmNotice(false);
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        const result = await signUpLecturer(email.trim(), password);
+        if (result.needsConfirmation) {
+          setConfirmNotice(true);
+          setBusy(false);
+          return;
+        }
+        onAuthenticated(result.session);
+      } else {
+        const session = await signInLecturer(email.trim(), password);
+        onAuthenticated(session);
+      }
+    } catch (e) {
+      setError(e.message || "Something went wrong — try again.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="join-screen">
+      <div className="join-card">
+        <div className="join-eyebrow">SEMAI · Lecturer</div>
+        <h1 className="join-title">{mode === "signup" ? "Create your account" : "Sign in"}</h1>
+        <p className="join-sub">
+          {mode === "signup" ? "So your courses are uniquely yours, not editable by anyone else." : "Sign in to see and manage your courses."}
+        </p>
+
+        {confirmNotice ? (
+          <div className="db-status ok" style={{ display: "block", textAlign: "left" }}>
+            Account created — check {email} for a confirmation link, then come back and sign in.
+          </div>
+        ) : (
+          <>
+            <input className="join-input" type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input
+              className="join-input"
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+            {error && <div className="setup-error" style={{ justifyContent: "center" }}><AlertTriangle size={13} /> {error}</div>}
+            <button className="join-btn" disabled={busy} onClick={submit}>
+              {busy ? <Loader2 className="spin" size={14} /> : null} {mode === "signup" ? "Create account" : "Sign in"}
+            </button>
+          </>
+        )}
+
+        <button
+          className="skip-link"
+          onClick={() => {
+            setMode((m) => (m === "signup" ? "signin" : "signup"));
+            setError("");
+            setConfirmNotice(false);
+          }}
+        >
+          {mode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}
+        </button>
+        <button className="skip-link" onClick={onBack}>← Back to role select</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Lecturer setup — ingestion + tuning. This is the new core of the workflow.
 // ---------------------------------------------------------------------------
 function CourseMetaScreen({ draft, editing, onChange, onContinue, onCancel }) {
@@ -1184,7 +1367,7 @@ function JoinScreen({ courses, onJoin, onBack }) {
 // far, and the two things a lecturer actually needs from here — add
 // another module to a course, or preview one as a student would see it.
 // Saving a module always lands back here, never in a live session.
-function LecturerDashboard({ courses, dbStatus, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack }) {
+function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut }) {
   const statusLabel = {
     connected: { text: "Connected to Supabase — courses persist across refreshes", cls: "ok" },
     loading: { text: "Connecting to Supabase…", cls: "loading" },
@@ -1195,10 +1378,13 @@ function LecturerDashboard({ courses, dbStatus, onNewCourse, onEditCourse, onAdd
   return (
     <div className="setup-screen">
       <div className="setup-header">
-        <div className="join-eyebrow">Lecturer dashboard</div>
+        <div className="join-eyebrow">Lecturer dashboard {lecturerEmail && <span className="setup-optional">· {lecturerEmail}</span>}</div>
         <h1 className="join-title">Your courses</h1>
         <p className="join-sub">Build a course module by module. Saving publishes it for students — it won't drop you into a live session.</p>
-        <button className="skip-link" onClick={onBack}>← Back to role select</button>
+        <div style={{ display: "flex", gap: 14 }}>
+          <button className="skip-link" onClick={onBack}>← Back to role select</button>
+          {onSignOut && <button className="skip-link" onClick={onSignOut}>Sign out</button>}
+        </div>
       </div>
 
       {statusLabel && <div className={`db-status ${statusLabel.cls}`}>{statusLabel.text}</div>}
@@ -1943,7 +2129,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
 // navigating back and forth (e.g. lecturer editing session mid-demo).
 // ---------------------------------------------------------------------------
 export default function SEMAIApp() {
-  const [stage, setStage] = useState("role"); // role | dashboard | courseMeta | moduleSetup | join | room
+  const [stage, setStage] = useState("role"); // role | auth | dashboard | courseMeta | moduleSetup | join | room
   const [role, setRole] = useState(null);
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
@@ -1952,6 +2138,22 @@ export default function SEMAIApp() {
   const [roomData, setRoomData] = useState(null); // { curriculum, settings }
   const [studentName, setStudentName] = useState("Student");
   const [dbStatus, setDbStatus] = useState(supabaseEnabled() ? "loading" : "local"); // loading | connected | error | local
+  const [session, setSession] = useState(null); // { accessToken, refreshToken, user: {id, email} } | null
+
+  // Try to restore a lecturer session on load (refreshing it, since access
+  // tokens expire after ~1hr but refresh tokens last much longer). Silently
+  // does nothing if Supabase isn't configured or nothing was stored.
+  useEffect(() => {
+    if (!supabaseEnabled()) return;
+    const stored = loadSessionLocally();
+    if (!stored) return;
+    refreshLecturerSession(stored.refreshToken)
+      .then((fresh) => {
+        setSession(fresh);
+        saveSessionLocally(fresh);
+      })
+      .catch(() => saveSessionLocally(null)); // stored session is stale/invalid — just drop it
+  }, []);
 
   // Load once on mount. If Supabase isn't configured (blank URL/key) or the
   // request fails, we just keep the in-memory DEFAULT_COURSE state — same
@@ -1987,11 +2189,29 @@ export default function SEMAIApp() {
   const patchSetup = (patch) => setSetupState((s) => ({ ...s, ...patch }));
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
+  // Only Supabase-backed courses have a real owner_id to filter on. Without
+  // Supabase configured, everything stays in the old single-user local mode
+  // (no auth gate at all — see the role-select handler below).
+  const myCourses = supabaseEnabled() && session ? courses.filter((c) => c.ownerId === session.user.id) : courses;
+
+  const handleAuthenticated = (newSession) => {
+    setSession(newSession);
+    saveSessionLocally(newSession);
+    setStage("dashboard");
+  };
+
+  const handleSignOut = () => {
+    if (session) signOutLecturer(session.accessToken);
+    setSession(null);
+    saveSessionLocally(null);
+    setStage("role");
+  };
 
   const handleNewCourse = () => {
     setCourseDraft({
       id: makeId("course"), code: "", title: "", institution: "",
       tone: "conversational", voiceProvider: "browser", elevenLabsApiKey: "", elevenLabsVoiceId: "",
+      ownerId: session ? session.user.id : null,
       modules: [],
     });
     setEditingCourse(false);
@@ -2008,7 +2228,7 @@ export default function SEMAIApp() {
     setCourses((cs) => (cs.some((c) => c.id === courseDraft.id) ? cs.map((c) => (c.id === courseDraft.id ? courseDraft : c)) : [...cs, courseDraft]));
     setActiveCourseId(courseDraft.id);
     if (supabaseEnabled()) {
-      saveCourseToSupabase(courseDraft).catch((e) => console.error("Supabase course save failed:", e));
+      saveCourseToSupabase(courseDraft, session?.accessToken).catch((e) => console.error("Supabase course save failed:", e));
     }
     if (editingCourse) {
       setStage("dashboard");
@@ -2030,7 +2250,7 @@ export default function SEMAIApp() {
   const handleSaveModule = (moduleObj) => {
     setCourses((cs) => cs.map((c) => (c.id === activeCourseId ? { ...c, modules: [...c.modules, moduleObj] } : c)));
     if (supabaseEnabled()) {
-      saveModuleToSupabase(activeCourseId, moduleObj).catch((e) => console.error("Supabase module save failed:", e));
+      saveModuleToSupabase(activeCourseId, moduleObj, session?.accessToken).catch((e) => console.error("Supabase module save failed:", e));
     }
     setStage("dashboard");
   };
@@ -2040,7 +2260,7 @@ export default function SEMAIApp() {
     const updatedCourse = { ...course, modules: [...course.modules, moduleObj] };
     setCourses((cs) => cs.map((c) => (c.id === activeCourseId ? updatedCourse : c)));
     if (supabaseEnabled()) {
-      saveModuleToSupabase(activeCourseId, moduleObj).catch((e) => console.error("Supabase module save failed:", e));
+      saveModuleToSupabase(activeCourseId, moduleObj, session?.accessToken).catch((e) => console.error("Supabase module save failed:", e));
     }
     primeAudioForVoice();
     setRoomData(buildRoomData(updatedCourse, moduleObj));
@@ -2073,19 +2293,29 @@ export default function SEMAIApp() {
         <RoleSelectScreen
           onSelectRole={(r) => {
             setRole(r);
-            setStage(r === "lecturer" ? "dashboard" : "join");
+            if (r === "lecturer") {
+              // Only gate on real auth when there's an actual database to
+              // scope ownership against — without Supabase configured this
+              // stays exactly the old single-user local mode.
+              setStage(supabaseEnabled() && !session ? "auth" : "dashboard");
+            } else {
+              setStage("join");
+            }
           }}
         />
       )}
+      {stage === "auth" && <AuthScreen onAuthenticated={handleAuthenticated} onBack={() => setStage("role")} />}
       {stage === "dashboard" && (
         <LecturerDashboard
-          courses={courses}
+          courses={myCourses}
           dbStatus={dbStatus}
+          lecturerEmail={session?.user?.email}
           onNewCourse={handleNewCourse}
           onEditCourse={handleEditCourse}
           onAddModule={handleAddModule}
           onPreviewModule={handlePreviewModule}
           onBack={() => setStage("role")}
+          onSignOut={session ? handleSignOut : null}
         />
       )}
       {stage === "courseMeta" && courseDraft && (
