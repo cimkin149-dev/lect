@@ -408,7 +408,7 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 // Row Level Security — anyone who reads it from your deployed site's
 // network requests could run up charges on your account).
 // ---------------------------------------------------------------------------
-const AI_PROXY_URL = ""; // e.g. "https://<project>.supabase.co/functions/v1/claude-proxy"
+const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy";
 
 async function callClaude(systemPrompt, userPrompt) {
   const usingProxy = Boolean(AI_PROXY_URL);
