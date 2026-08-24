@@ -154,14 +154,19 @@ cancel button at all).
   `api.anthropic.com` calls with no key attached work *only* inside the
   Claude.ai artifact preview, where Anthropic's own infrastructure
   authenticates the request invisibly — this does **not** work once deployed
-  elsewhere. An `AI_PROXY_URL` config point exists for routing through a
-  server-side proxy instead (a Supabase Edge Function was designed for this —
-  see Status below for exactly what's finalized vs. in progress).
-- **RLS policies as shipped are wide open** (any anon-key holder can read/write
-  any course or module) — acceptable for solo/demo use, explicitly documented
-  as *not* acceptable the moment more than one real lecturer uses the system.
-  The schema file includes the exact `auth.uid()`-scoped policy pattern to
-  replace them with once real lecturer accounts exist.
+  elsewhere. Solved via a Supabase Edge Function proxy (`AI_PROXY_URL`) that
+  holds the real key as a server-side secret — currently defaults to Gemini's
+  free tier with Anthropic as a configurable fallback.
+- **Lecturer authentication is live**, not just designed: Supabase Auth
+  (email/password), applied directly against the production database — a
+  `courses.owner_id` column plus RLS policies scoped to `auth.uid()` for every
+  write (insert/update/delete on both `courses` and `modules`). Reads stay
+  public — students still browse and join without an account. Auth only gates
+  the lecturer flow when Supabase is actually configured; running the app with
+  no `SUPABASE_URL` set falls back to the original single-user local mode
+  unaffected. Session tokens persist via `localStorage` (browser-only, wrapped
+  defensively — this specifically does not work inside the Claude.ai artifact
+  preview, only in a real deployed browser tab) with refresh-on-load.
 
 ## 5. Setup & deployment
 
@@ -200,10 +205,8 @@ and manifest generate correctly):
   "offline lecture" mode, only install + fast load.
 
 **Deliberately not built yet (scoped out, not forgotten):**
-- Lecturer authentication and per-owner RLS scoping (see Security Posture) —
-  the live database's RLS policies are still wide open (any anon-key holder
-  can read/write any course or module), which is the single biggest thing to
-  fix before more than one real lecturer uses this.
+- Password reset / "forgot password" flow — sign up and sign in exist, account
+  recovery doesn't yet.
 - Multi-student real-time synchronized classrooms — the current architecture
   is single-student-per-session; true shared classrooms need a different,
   server-synced state model, not an incremental add-on.
