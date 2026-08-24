@@ -408,41 +408,59 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 // Row Level Security — anyone who reads it from your deployed site's
 // network requests could run up charges on your account).
 // ---------------------------------------------------------------------------
-const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy";
+const AI_PROXY_URL =
+  "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemini-proxy";
 
-async function callClaude(systemPrompt, userPrompt) {
-  const usingProxy = Boolean(AI_PROXY_URL);
-  const response = await fetch(usingProxy ? AI_PROXY_URL : "https://api.anthropic.com/v1/messages", {
+async function callGemini(systemPrompt, userPrompt) {
+  const response = await fetch(AI_PROXY_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      // The proxy is a Supabase Edge Function, which requires a valid
-      // project JWT to invoke — the anon key satisfies that.
-      ...(usingProxy && SUPABASE_ANON_KEY ? { Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY } : {}),
+
+      // Supabase Edge Function authentication
+      ...(SUPABASE_ANON_KEY
+        ? {
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            apikey: SUPABASE_ANON_KEY,
+          }
+        : {}),
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
+      systemPrompt,
+      userPrompt,
     }),
   });
+
   const data = await response.json();
+
   if (data && data.rateLimited) {
     const err = new Error("AI provider is rate-limited right now.");
     err.rateLimited = true;
     throw err;
   }
-  if (response.status >= 400) {
-    throw new Error((data && data.error) || `AI request failed (${response.status})`);
-  }
-  const text = (data.content || [])
-    .map((b) => (b.type === "text" ? b.text : ""))
-    .join("\n")
-    .trim();
-  return text || "";
-}
 
+  if (!response.ok) {
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        `AI request failed (${response.status})`
+    );
+  }
+
+  // If the Edge Function returns a simple { text: "..." }
+  if (typeof data.text === "string") {
+    return data.text.trim();
+  }
+
+  // If the Edge Function returns Gemini's native response
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || "")
+      .join("")
+      .trim() || "";
+
+  return text;
+}
 // Very small Java syntax highlighter — good enough for a skeleton IDE pane.
 function highlightJava(code) {
   const escaped = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
