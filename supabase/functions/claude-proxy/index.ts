@@ -3,7 +3,7 @@
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 
-const GEMINI_MODEL = "gemini-2.5-flash-lite";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
 const corsHeaders = {
