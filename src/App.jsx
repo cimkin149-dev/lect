@@ -406,7 +406,7 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 // else. Failing loudly with a clear config error is much easier to debug
 // than a network request that was doomed from the start.
 // ---------------------------------------------------------------------------
-const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy";
+const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemini-proxy";
 
 async function callAI(systemPrompt, userPrompt) {
   if (!AI_PROXY_URL) {

@@ -21,14 +21,14 @@ Edge Function keeps it server-side.
 ```bash
 npx supabase login
 npx supabase link --project-ref rodwpttdegrfwqioyoci
-npx supabase functions deploy claude-proxy
+npx supabase functions deploy gemini-proxy
 
 npx supabase secrets set GEMINI_API_KEY=AIza-your-real-key-here
 ```
 
 Function URL will be:
 ```
-https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy
+https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemini-proxy
 ```
 
 ## Step 2 — Point the app at the proxy
@@ -36,7 +36,7 @@ https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy
 In `src/App.jsx`, near the top:
 
 ```js
-const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy";
+const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemini-proxy";
 ```
 
 `SUPABASE_URL` and `SUPABASE_ANON_KEY` just below it should already be filled in.
