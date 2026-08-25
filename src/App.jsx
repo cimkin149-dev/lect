@@ -397,35 +397,30 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 }
 
 // ---------------------------------------------------------------------------
-// AI backend. Fill AI_PROXY_URL in with your own server-side proxy (see
-// supabase/functions/claude-proxy in the deployment package) to make this
-// work outside the Claude.ai artifact preview. Left blank, it calls
-// api.anthropic.com directly with no key attached — that ONLY works inside
-// this chat's artifact preview, where Anthropic's own infrastructure
-// authenticates the request invisibly. A real deployed site has no such
-// thing, and a raw Anthropic API key must never be embedded in browser
-// code (unlike the Supabase anon key, it isn't protected by anything like
-// Row Level Security — anyone who reads it from your deployed site's
-// network requests could run up charges on your account).
+// AI backend — routes through the Supabase Edge Function proxy, which holds
+// the real Gemini API key server-side (see supabase/functions/claude-proxy).
+// No direct-to-provider fallback here on purpose: an earlier version of this
+// tried api.anthropic.com directly whenever AI_PROXY_URL was unset, which
+// only ever worked inside the Claude.ai artifact preview (never in a real
+// deployed browser tab) and silently produced "Failed to fetch" everywhere
+// else. Failing loudly with a clear config error is much easier to debug
+// than a network request that was doomed from the start.
 // ---------------------------------------------------------------------------
 const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/claude-proxy";
 
-async function callClaude(systemPrompt, userPrompt) {
-  const usingProxy = Boolean(AI_PROXY_URL);
-  const response = await fetch(usingProxy ? AI_PROXY_URL : "https://api.anthropic.com/v1/messages", {
+async function callAI(systemPrompt, userPrompt) {
+  if (!AI_PROXY_URL) {
+    throw new Error("AI_PROXY_URL isn't configured — deploy the Edge Function and set it near the top of App.jsx.");
+  }
+  const response = await fetch(AI_PROXY_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       // The proxy is a Supabase Edge Function, which requires a valid
       // project JWT to invoke — the anon key satisfies that.
-      ...(usingProxy && SUPABASE_ANON_KEY ? { Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY } : {}),
+      ...(SUPABASE_ANON_KEY ? { Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY } : {}),
     },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    }),
+    body: JSON.stringify({ system: systemPrompt, prompt: userPrompt }),
   });
   const data = await response.json();
   if (data && data.rateLimited) {
@@ -856,7 +851,7 @@ Target total lecture length: ${settings.durationMinutes} minutes.
 Source material, in order:
 
 ${rawUnits.map((u, i) => `--- Unit ${i + 1} ---\n${u}`).join("\n\n")}`;
-  const raw = await callClaude(system, user);
+  const raw = await callAI(system, user);
   if (!raw) throw new Error("No response from the AI — check your connection and try again.");
   return parseCurriculumJSON(raw);
 }
@@ -1659,13 +1654,13 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
     [settings.voiceProvider, settings.elevenLabsApiKey, settings.elevenLabsVoiceId]
   );
 
-  // Every spoken AI call goes through here instead of callClaude directly,
+  // Every spoken AI call goes through here instead of callAI directly,
   // so a rate limit or provider error surfaces as a visible notice (and a
   // sensible spoken fallback line) instead of the lecturer just going
   // quiet or saying something generic with no explanation why.
   const askLecturer = useCallback(async (system, prompt, fallback) => {
     try {
-      const text = await callClaude(system, prompt);
+      const text = await callAI(system, prompt);
       if (text) setAiNotice("");
       return text || fallback;
     } catch (e) {

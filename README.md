@@ -7,7 +7,7 @@ A real, buildable, installable (PWA) React project (Vite).
 1. A Supabase project with `supabase/schema.sql` run (already done for the
    project's live database, if you're using the one already connected).
 2. A free Gemini API key — [aistudio.google.com/apikey](https://aistudio.google.com/apikey),
-   no card required. (Anthropic works too if you have credit — see below.)
+   no card required.
 3. A [Netlify](https://netlify.com) account, connected to this GitHub repo.
 4. The [Supabase CLI](https://supabase.com/docs/guides/cli) to deploy the AI proxy.
 
@@ -23,15 +23,8 @@ npx supabase login
 npx supabase link --project-ref rodwpttdegrfwqioyoci
 npx supabase functions deploy claude-proxy
 
-# Gemini (free tier) — this is what the function uses by default if set:
 npx supabase secrets set GEMINI_API_KEY=AIza-your-real-key-here
-
-# or, if you'd rather use Anthropic instead:
-# npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-your-real-key-here
 ```
-
-If both secrets are set, Gemini wins. Switching providers later is just
-changing which secret is set — no code change or redeploy needed.
 
 Function URL will be:
 ```
