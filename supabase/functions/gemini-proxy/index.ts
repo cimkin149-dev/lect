@@ -1,6 +1,6 @@
-// supabase/functions/claude-proxy/index.ts
+// supabase/functions/gemini-proxy/index.ts
 //
-// Deploy: supabase functions deploy claude-proxy
+// Deploy: supabase functions deploy gemini-proxy
 // Set the key as a secret (never in this file, never in git):
 //
 //   supabase secrets set GEMINI_API_KEY=AIza...

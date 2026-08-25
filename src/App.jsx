@@ -398,7 +398,7 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 
 // ---------------------------------------------------------------------------
 // AI backend — routes through the Supabase Edge Function proxy, which holds
-// the real Gemini API key server-side (see supabase/functions/claude-proxy).
+// the real Gemini API key server-side (see supabase/functions/gemini-proxy).
 // No direct-to-provider fallback here on purpose: an earlier version of this
 // tried api.anthropic.com directly whenever AI_PROXY_URL was unset, which
 // only ever worked inside the Claude.ai artifact preview (never in a real

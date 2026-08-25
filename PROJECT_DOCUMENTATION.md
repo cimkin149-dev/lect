@@ -67,7 +67,7 @@ cancel button at all).
 - **Frontend:** single-page React app (Vite), no router library — a simple
   `stage` state machine drives which screen renders.
 - **AI:** Claude API (`claude-sonnet-4-6` for lecture content generation),
-  called via `callClaude(system, prompt)`.
+  called via `callAI(system, prompt)`, proxied through a Supabase Edge Function to Gemini.
 - **Voice:** browser `SpeechSynthesis` by default; optional ElevenLabs
   integration for natural-sounding speech (tuned voice settings: lower
   stability, added style, speaker boost — flat/robotic defaults were
