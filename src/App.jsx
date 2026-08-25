@@ -3,7 +3,7 @@ import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
   Sparkles, Trash2, ArrowRight, GraduationCap, Users, Settings2, RotateCcw,
-  AlertTriangle, Clock, FileDown,
+  AlertTriangle, Clock, FileDown, Maximize2, Minimize2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -928,7 +928,14 @@ async function extractRawUnits(file) {
 // ---------------------------------------------------------------------------
 function buildCurriculumSystemPrompt(settings, estimatedWordBudget) {
   const tone = TONE_OPTIONS.find((t) => t.id === settings.tone) || TONE_OPTIONS[0];
-  return `You are an expert instructional designer. You convert raw lecture material (slide text, speaker notes, or an outline) into structured JSON for an AI that will deliver a LIVE, SPOKEN lecture from it.
+  const duration = Number(settings.durationMinutes) || 45;
+  // Rough floor/ceiling so the AI errs toward a genuinely thorough deck
+  // instead of compressing a whole session into a handful of slides —
+  // the previous version left slide count entirely open-ended and the
+  // result was consistently too sparse.
+  const minSlides = Math.max(5, Math.round(duration / 6));
+  const maxSlides = Math.max(9, Math.round(duration / 3));
+  return `You are an expert instructional designer building a genuinely thorough, professional slide deck — the kind a real university lecturer would prepare, not a quick summary. You convert raw lecture material (slide text, speaker notes, or an outline) into structured JSON for an AI that will deliver a LIVE, SPOKEN lecture from it.
 
 Return ONLY valid JSON. No markdown code fences, no commentary before or after.
 
@@ -940,8 +947,8 @@ Schema:
   "slides": [
     {
       "title": string,
-      "bullets": string[],      // 2-5 short bullets, what appears on screen (under 12 words each)
-      "notes": string,          // INSTRUCTIONS to the AI lecturer for how to narrate this slide out loud (not the narration itself) — what to cover, in what order, any example to use. Written as guidance, e.g. "Explain X, then contrast it with Y using a short example."
+      "bullets": string[],      // 4-7 substantive bullets, what appears on screen
+      "notes": string,          // INSTRUCTIONS to the AI lecturer for how to narrate this slide out loud (not the narration itself) — what to cover, in what order, specific examples or common misconceptions to mention. Written as guidance, e.g. "Explain X, then contrast it with Y using a short example — many students confuse this with Z, so address that directly."
       "hasCode": boolean,
       "code": string | null     // only if hasCode is true — a clean, correct, well-commented runnable code example
     }
@@ -949,7 +956,9 @@ Schema:
 }
 
 Rules:
-- Segment the source material into a sensible number of slides. Don't force a 1-to-1 mapping if a source unit is too dense (split it) or too sparse (merge it with a neighbor).
+- Build a genuinely thorough deck: for a ${duration}-minute session, that's typically around ${minSlides}-${maxSlides} slides. Err toward more, focused slides rather than compressing everything into a few dense ones — split one source topic into several slides (e.g. "definition", "how it works", "worked example") when that gives students a clearer, more complete picture. Don't force a rigid 1-to-1 mapping with the source material either way — split dense source units, merge sparse ones, but the FINAL slide count should reflect real depth, not just how the source happened to be chunked.
+- Each slide's "bullets" must be genuinely informative, not telegraphic fragments — write real, complete points (roughly a full sentence or a rich phrase each), specific enough that a student could understand the core idea from the bullets alone, without hearing the lecture. Avoid vague filler bullets.
+- The "notes" field should give the lecturer enough to deliver a full, well-developed explanation — specific examples, common misconceptions worth addressing, or points of emphasis, not just "explain X."
 - Every "notes" field must explicitly tell the lecturer to keep the spoken explanation to about ${estimatedWordBudget} words — adjust proportionally if your final slide count differs noticeably from the source unit count.
 - The lecturer's tone should be ${tone.desc}.
 - If a slide teaches a code example, set hasCode true, put the exact code in "code", and have "notes" instruct the lecturer to narrate it roughly top-to-bottom as if typing it live.
@@ -993,7 +1002,7 @@ Target total lecture length: ${settings.durationMinutes} minutes.
 Source material, in order:
 
 ${rawUnits.map((u, i) => `--- Unit ${i + 1} ---\n${u}`).join("\n\n")}`;
-  const raw = await callAI(system, user);
+  const raw = await callAI(system, user, 8000);
   if (!raw) throw new Error("No response from the AI — check your connection and try again.");
   return parseCurriculumJSON(raw);
 }
@@ -1592,6 +1601,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   const [aiNotice, setAiNotice] = useState("");
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [sessionComplete, setSessionComplete] = useState(false);
+  const [presentationMode, setPresentationMode] = useState(true);
   const [notesStatus, setNotesStatus] = useState("idle"); // idle | generating | error
   const [notesProgress, setNotesProgress] = useState("");
 
@@ -2063,6 +2073,14 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
     setAutopilotOn((v) => !v);
   };
 
+  const togglePresentationMode = () => {
+    setPresentationMode((v) => {
+      const next = !v;
+      if (next) setChatOpen(false); // start clean; the chat control still works independently afterward
+      return next;
+    });
+  };
+
   // Guaranteed fallback: this handler runs inside a real click, so it will
   // satisfy every browser's autoplay/gesture requirement regardless of why
   // audio was blocked. Re-primes both audio paths and, if the lecturer had
@@ -2104,7 +2122,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   };
 
   return (
-    <div className="room">
+    <div className={`room ${presentationMode ? "presentation" : ""}`}>
       <div className="topbar">
         <div className="topbar-title">
           <span className="dot-live" /> {curriculum.code} · {curriculum.unit}
@@ -2123,6 +2141,9 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
           </button>
           <button className={`topbar-edit ${autopilotOn ? "on" : ""}`} onClick={toggleAutopilot} title="Toggle automatic lecture">
             {autopilotOn ? <Volume2 size={13} /> : <VideoOff size={13} />} {autopilotOn ? "Auto-lecture on" : "Auto-lecture off"}
+          </button>
+          <button className={`topbar-edit ${presentationMode ? "on" : ""}`} onClick={togglePresentationMode} title="Toggle presentation mode (bigger slide view)">
+            {presentationMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />} {presentationMode ? "Exit presentation" : "Presentation mode"}
           </button>
           {role === "lecturer" && onEditSession && (
             <button className="topbar-edit" onClick={onEditSession} title="Edit session settings">
@@ -2168,7 +2189,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
           <div className="stage">
             {viewMode === "slides" ? (
               <div className="slide">
-                <div className="slide-eyebrow">{curriculum.unit}</div>
+                <div className="slide-eyebrow"><span>{curriculum.unit}</span><span>{slideIndex + 1} / {curriculum.slides.length}</span></div>
                 <h2>{slide.title}</h2>
                 <ul>
                   {slide.bullets.map((b, i) => (
@@ -2629,9 +2650,9 @@ function GlobalStyles() {
       .tts-notice.clickable { cursor: pointer; text-decoration: underline; }
 
       .body { flex: 1 1 auto; display: flex; overflow: hidden; min-height: 0; }
-      .main-col { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; min-width: 0; min-height: 0; }
+      .main-col { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; min-width: 0; min-height: 0; transition: padding 0.25s ease; }
 
-      .tiles { flex: 0 0 auto; display: flex; gap: 10px; height: 90px; }
+      .tiles { flex: 0 0 auto; display: flex; gap: 10px; height: 90px; transition: opacity 0.2s ease; }
       .tile { flex: 1; max-width: 220px; background: #1E2530; border-radius: 12px; border: 1px solid #232A34; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; position: relative; transition: border-color 0.2s, box-shadow 0.2s; }
       .tile.speaking { border-color: #E8A33D; box-shadow: 0 0 0 2px rgba(232,163,61,0.25); }
       .avatar { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; }
@@ -2644,11 +2665,24 @@ function GlobalStyles() {
       .stage-switch button.active { background: #232A34; color: #EDEFF2; border-color: #37404D; }
       .stage-switch button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-      .stage { flex: 1 1 auto; background: #1E2530; border: 1px solid #232A34; border-radius: 14px; padding: 28px; overflow-y: auto; min-height: 0; }
-      .slide-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #E8A33D; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 10px; }
-      .slide h2 { font-family: 'Space Grotesk', sans-serif; font-size: 24px; margin: 0 0 16px; }
-      .slide ul { margin: 0; padding-left: 18px; color: #C7CCD4; line-height: 1.9; font-size: 14px; }
+      .stage { flex: 1 1 auto; background: #1E2530; border: 1px solid #232A34; border-radius: 14px; padding: 36px 44px; overflow-y: auto; min-height: 0; transition: padding 0.25s ease; display: flex; flex-direction: column; justify-content: center; }
+      .slide-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #E8A33D; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; display: flex; justify-content: space-between; }
+      .slide h2 { font-family: 'Space Grotesk', sans-serif; font-size: 30px; margin: 0 0 22px; line-height: 1.25; transition: font-size 0.25s ease; }
+      .slide ul { margin: 0; padding-left: 22px; color: #C7CCD4; line-height: 2; font-size: 16px; transition: font-size 0.25s ease; }
+      .slide ul li { margin-bottom: 10px; }
       .paused-ribbon { margin-top: 18px; padding: 8px 12px; background: rgba(232,163,61,0.12); border: 1px solid rgba(232,163,61,0.35); color: #E8A33D; font-size: 12px; border-radius: 8px; }
+
+      /* Presentation mode: tiles hidden, everything else scales up so the
+         slide reads like an actual projected presentation rather than a
+         chat-app content pane. Toggled from the topbar; chat can still be
+         reopened independently via the controlbar without leaving it. */
+      .room.presentation .tiles { display: none; }
+      .room.presentation .main-col { padding: 22px 48px; }
+      .room.presentation .stage { padding: 64px 90px; }
+      .room.presentation .slide-eyebrow { font-size: 13px; }
+      .room.presentation .slide h2 { font-size: 46px; margin-bottom: 32px; }
+      .room.presentation .slide ul { font-size: 22px; line-height: 2.15; }
+      .room.presentation .slide ul li { margin-bottom: 16px; }
 
       .ide { display: flex; flex-direction: column; height: 100%; }
       .ide-bar { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8B93A1; margin-bottom: 10px; border-bottom: 1px solid #232A34; padding-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
