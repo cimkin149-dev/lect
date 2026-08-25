@@ -3,7 +3,7 @@ import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
   Sparkles, Trash2, ArrowRight, GraduationCap, Users, Settings2, RotateCcw,
-  AlertTriangle, Clock,
+  AlertTriangle, Clock, FileDown,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -408,7 +408,7 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 // ---------------------------------------------------------------------------
 const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemini-proxy";
 
-async function callAI(systemPrompt, userPrompt) {
+async function callAI(systemPrompt, userPrompt, maxTokens) {
   if (!AI_PROXY_URL) {
     throw new Error("AI_PROXY_URL isn't configured — deploy the Edge Function and set it near the top of App.jsx.");
   }
@@ -420,7 +420,7 @@ async function callAI(systemPrompt, userPrompt) {
       // project JWT to invoke — the anon key satisfies that.
       ...(SUPABASE_ANON_KEY ? { Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY } : {}),
     },
-    body: JSON.stringify({ system: systemPrompt, prompt: userPrompt }),
+    body: JSON.stringify({ system: systemPrompt, prompt: userPrompt, ...(maxTokens ? { maxTokens } : {}) }),
   });
   const data = await response.json();
   if (data && data.rateLimited) {
@@ -436,6 +436,148 @@ async function callAI(systemPrompt, userPrompt) {
     .join("\n")
     .trim();
   return text || "";
+}
+
+// ---------------------------------------------------------------------------
+// Post-lecture notes — expanded written explanations for each slide,
+// generated once autopilot finishes teaching. One AI call per slide rather
+// than one big call for the whole lecture: each response stays small and
+// predictable (won't get silently truncated mid-JSON the way one giant
+// combined request could), and if a single slide's call fails or hits a
+// free-tier rate limit, the rest still succeed instead of losing everything.
+// ---------------------------------------------------------------------------
+async function generateLectureNotes(curriculum, lecturerIdentity, onProgress) {
+  const sections = [];
+  for (let i = 0; i < curriculum.slides.length; i++) {
+    const slide = curriculum.slides[i];
+    onProgress && onProgress(`Writing notes for "${slide.title}" (${i + 1}/${curriculum.slides.length})…`);
+    const system = `You are ${lecturerIdentity}, writing detailed study notes to accompany a live lecture you just taught. Unlike the spoken version, these written notes can be longer and more thorough — cover the concept fully: what it is, why it matters, how it works, and a concrete example. Write 2-4 well-developed paragraphs of plain prose. No markdown formatting, no bullet points, no headers — just paragraphs, since this is typeset directly into a PDF as body text.`;
+    const prompt = slide.hasCode
+      ? `Topic: "${slide.title}". Key points covered live: ${slide.bullets.join("; ")}. Teaching context: ${slide.notes} Also explain this code example in more depth than there was time for live: ${slide.code}`
+      : `Topic: "${slide.title}". Key points covered live: ${slide.bullets.join("; ")}. Teaching context: ${slide.notes}`;
+    let explanation;
+    try {
+      explanation = await callAI(system, prompt, 1200);
+      if (!explanation) throw new Error("empty response");
+    } catch (e) {
+      explanation = "Detailed notes for this section couldn't be generated right now — please refer to the key points covered during the live session.";
+    }
+    sections.push({ title: slide.title, explanation, code: slide.hasCode ? slide.code : null });
+  }
+  return sections;
+}
+
+function addPdfFooter(doc, pageNum) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  doc.setFontSize(8);
+  doc.setTextColor(140, 140, 140);
+  doc.text(`SEMAI — AI Lecturer  ·  Page ${pageNum}`, pageWidth / 2, pageHeight - 20, { align: "center" });
+}
+
+// Branded, paginated lecture-notes PDF. Validated against real multi-page,
+// multi-section, code-block content before being wired in here.
+async function buildLectureNotesPdf(curriculum, sections) {
+  // Dynamically imported so the ~250KB jsPDF + its optional HTML-rendering
+  // plugin only download at the moment someone actually generates a PDF —
+  // not as part of the app's initial load, which matters for a PWA meant
+  // to start up fast.
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 50;
+  const contentWidth = pageWidth - margin * 2;
+  let pageNum = 1;
+
+  doc.setFillColor(20, 24, 28);
+  doc.rect(0, 0, pageWidth, 90, "F");
+  doc.setTextColor(232, 163, 61);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(22);
+  doc.text("SEMAI", margin, 45);
+  doc.setTextColor(235, 239, 242);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.text("AI-Led Lecture Notes", margin, 62);
+
+  const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  doc.setFontSize(9);
+  doc.setTextColor(200, 204, 212);
+  doc.text(dateStr, pageWidth - margin, 45, { align: "right" });
+
+  let y = 125;
+  doc.setTextColor(20, 24, 28);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text(`${curriculum.code} — ${curriculum.title}`, margin, y);
+  y += 20;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(12);
+  doc.setTextColor(90, 90, 90);
+  doc.text(curriculum.unit, margin, y);
+  y += 35;
+
+  addPdfFooter(doc, pageNum);
+
+  const ensureSpace = (needed) => {
+    if (y + needed > pageHeight - 50) {
+      doc.addPage();
+      pageNum++;
+      addPdfFooter(doc, pageNum);
+      y = 50;
+    }
+  };
+
+  sections.forEach((section, i) => {
+    ensureSpace(40);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(47, 111, 79);
+    const titleLines = doc.splitTextToSize(`${i + 1}. ${section.title}`, contentWidth);
+    ensureSpace(titleLines.length * 16);
+    doc.text(titleLines, margin, y);
+    y += titleLines.length * 16 + 8;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.setTextColor(30, 30, 30);
+    const bodyLines = doc.splitTextToSize(section.explanation, contentWidth);
+    bodyLines.forEach((line) => {
+      ensureSpace(16);
+      doc.text(line, margin, y);
+      y += 15;
+    });
+    y += 8;
+
+    if (section.code) {
+      const codeLines = section.code.split("\n");
+      const codeBlockHeight = codeLines.length * 12 + 16;
+      ensureSpace(codeBlockHeight + 10);
+      doc.setFillColor(245, 245, 245);
+      doc.rect(margin, y - 10, contentWidth, codeBlockHeight, "F");
+      doc.setFont("courier", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(40, 40, 40);
+      let codeY = y + 4;
+      codeLines.forEach((line) => {
+        doc.text(line, margin + 8, codeY);
+        codeY += 12;
+      });
+      y = codeY + 14;
+      doc.setFont("helvetica", "normal");
+    } else {
+      y += 14;
+    }
+  });
+
+  return doc;
+}
+
+async function downloadLectureNotesPdf(curriculum, sections) {
+  const doc = await buildLectureNotesPdf(curriculum, sections);
+  const safeName = `${curriculum.code}-${curriculum.unit}`.replace(/[^a-z0-9\-_. ]/gi, "").replace(/\s+/g, "_");
+  doc.save(`${safeName}-notes.pdf`);
 }
 
 // Very small Java syntax highlighter — good enough for a skeleton IDE pane.
@@ -1449,6 +1591,9 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   const [ttsNotice, setTtsNotice] = useState("");
   const [aiNotice, setAiNotice] = useState("");
   const [audioBlocked, setAudioBlocked] = useState(false);
+  const [sessionComplete, setSessionComplete] = useState(false);
+  const [notesStatus, setNotesStatus] = useState("idle"); // idle | generating | error
+  const [notesProgress, setNotesProgress] = useState("");
 
   const recognitionRef = useRef(null);
   const utteranceRef = useRef(null);
@@ -1491,6 +1636,9 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
     setLecturerState2("idle");
     setViewMode("slides");
     setAutopilotOn(true);
+    setSessionComplete(false);
+    setNotesStatus("idle");
+    setNotesProgress("");
   }, [curriculum]);
 
   useEffect(() => {
@@ -1774,6 +1922,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       setSlideIndex(i);
       await teachSlide(i);
     }
+    if (mountedRef.current) setSessionComplete(true);
   }, [runIntro, teachSlide, curriculum]);
 
   // Drives the whole session automatically: starts on mount / whenever
@@ -1927,6 +2076,21 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
     }
   };
 
+  const handleDownloadNotes = async () => {
+    setNotesStatus("generating");
+    try {
+      const sections = await generateLectureNotes(curriculum, lecturerIdentity, setNotesProgress);
+      if (!mountedRef.current) return;
+      await downloadLectureNotesPdf(curriculum, sections);
+      setNotesStatus("idle");
+      setNotesProgress("");
+    } catch (e) {
+      if (!mountedRef.current) return;
+      setNotesStatus("error");
+      setNotesProgress("");
+    }
+  };
+
   useEffect(() => {
     if (viewMode === "ide" && !slide.hasCode) setViewMode("slides");
   }, [slide, viewMode]);
@@ -2050,6 +2214,23 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
               Next <ChevronRight size={16} />
             </button>
           </div>
+
+          {sessionComplete && (
+            <div className="complete-banner">
+              <div>
+                <strong>🎓 Lecture complete!</strong>{" "}
+                {notesStatus === "generating"
+                  ? notesProgress || "Preparing your notes…"
+                  : notesStatus === "error"
+                  ? "Couldn't generate notes just now — try again."
+                  : "Download detailed written notes covering everything from today's session."}
+              </div>
+              <button className="explain-btn" disabled={notesStatus === "generating"} onClick={handleDownloadNotes}>
+                {notesStatus === "generating" ? <Loader2 className="spin" size={14} /> : <FileDown size={14} />}
+                {notesStatus === "generating" ? "Generating…" : "Download lecture notes (PDF)"}
+              </button>
+            </div>
+          )}
         </div>
 
         {chatOpen && (
@@ -2486,6 +2667,8 @@ function GlobalStyles() {
       .explain-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; background: #2F6F4F; color: #EDEFF2; font-weight: 600; font-size: 13px; cursor: pointer; }
       .explain-btn:disabled { opacity: 0.6; cursor: not-allowed; }
       .stage-actions .explain-btn { flex: 1; }
+      .complete-banner { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; margin-top: 4px; border-radius: 10px; background: rgba(47,111,79,0.12); border: 1px solid rgba(47,111,79,0.35); font-size: 12.5px; color: #C7CCD4; }
+      .complete-banner .explain-btn { flex: 0 0 auto; white-space: nowrap; }
       .status-pill { flex: 1; text-align: center; padding: 10px; border-radius: 8px; background: #1A1F27; border: 1px solid #232A34; color: #8B93A1; font-size: 12px; }
       .spin { animation: spin 1s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }

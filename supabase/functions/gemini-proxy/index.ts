@@ -45,7 +45,11 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { system, prompt } = await req.json();
+    const { system, prompt, maxTokens } = await req.json();
+    // Bounded regardless of what the client sends — most calls (live
+    // lecture lines) want the default short budget; lecture-notes
+    // generation asks for more room explicitly.
+    const outputTokens = Math.max(200, Math.min(8000, Number(maxTokens) || 1000));
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
     const res = await fetch(url, {
@@ -54,7 +58,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         systemInstruction: { parts: [{ text: system }] },
-        generationConfig: { maxOutputTokens: 1000 },
+        generationConfig: { maxOutputTokens: outputTokens },
       }),
     });
 
