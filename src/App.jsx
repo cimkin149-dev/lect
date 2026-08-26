@@ -446,18 +446,27 @@ async function callAI(systemPrompt, userPrompt, maxTokens) {
 // combined request could), and if a single slide's call fails or hits a
 // free-tier rate limit, the rest still succeed instead of losing everything.
 // ---------------------------------------------------------------------------
-async function generateLectureNotes(curriculum, lecturerIdentity, onProgress) {
+async function generateLectureNotes(curriculum, onProgress) {
   const sections = [];
   for (let i = 0; i < curriculum.slides.length; i++) {
     const slide = curriculum.slides[i];
     onProgress && onProgress(`Writing notes for "${slide.title}" (${i + 1}/${curriculum.slides.length})…`);
-    const system = `You are ${lecturerIdentity}, writing detailed study notes to accompany a live lecture you just taught. Unlike the spoken version, these written notes can be longer and more thorough — cover the concept fully: what it is, why it matters, how it works, and a concrete example. Write 2-4 well-developed paragraphs of plain prose. No markdown formatting, no bullet points, no headers — just paragraphs, since this is typeset directly into a PDF as body text.`;
+    // Deliberately NOT written as "you are the lecturer" and deliberately
+    // NOT fed slide.notes (that's narration guidance for the spoken
+    // version) — both of those together were the reason earlier notes came
+    // out reading like a transcript of what was said live. This is framed
+    // as an independent textbook/study-guide entry instead.
+    const system = `You are writing a formal, textbook-style study guide entry for a course called ${curriculum.code} — ${curriculum.title}. This is NOT a transcript or summary of a spoken lecture and must not read like one — no filler words like "so" or "now", no conversational asides, no phrases like "as we covered" or "as mentioned." Write it as a proper written reference a student would read on their own afterward, the way a textbook or study guide covers a topic.
+
+For the given topic, write a well-structured explanation covering, where relevant: a clear definition or framing of the concept, how it works or the underlying reasoning, a concrete worked example (invent a good one if none is given), and why it matters or a common mistake to avoid.
+
+Write 3-5 well-developed paragraphs of formal written prose. No markdown formatting, no bullet points, no headers — plain paragraphs, since this is typeset directly into a PDF as body text.`;
     const prompt = slide.hasCode
-      ? `Topic: "${slide.title}". Key points covered live: ${slide.bullets.join("; ")}. Teaching context: ${slide.notes} Also explain this code example in more depth than there was time for live: ${slide.code}`
-      : `Topic: "${slide.title}". Key points covered live: ${slide.bullets.join("; ")}. Teaching context: ${slide.notes}`;
+      ? `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}. Write the study-guide entry for this topic, and as part of it explain this code example in depth — what each part does and why: ${slide.code}`
+      : `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}. Write the study-guide entry for this topic.`;
     let explanation;
     try {
-      explanation = await callAI(system, prompt, 1200);
+      explanation = await callAI(system, prompt, 1500);
       if (!explanation) throw new Error("empty response");
     } catch (e) {
       explanation = "Detailed notes for this section couldn't be generated right now — please refer to the key points covered during the live session.";
@@ -581,6 +590,25 @@ async function downloadLectureNotesPdf(curriculum, sections) {
 }
 
 // Very small Java syntax highlighter — good enough for a skeleton IDE pane.
+// Splits spoken text into sentence-sized chunks so an explanation can be
+// interrupted and later RESUMED at sentence granularity, instead of either
+// losing the rest of the explanation or having to guess a mid-utterance cut
+// point (browser TTS and audio playback don't expose reliable enough
+// position tracking for that). Deliberately simple: only splits where
+// punctuation is followed by whitespace and then a capital letter/digit/
+// quote — this avoids false splits on decimals, initials, and dotted code
+// identifiers like "System.out.println" (none of which are followed by a
+// new capitalized word), at the minor cost of occasionally under-splitting
+// a sentence that starts with a lowercase word. Good enough for
+// interruption/TTS chunking; not meant to be grammatically perfect.
+function splitIntoSentences(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return [text || ""];
+  const parts = trimmed.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/);
+  const sentences = parts.map((s) => s.trim()).filter(Boolean);
+  return sentences.length > 0 ? sentences : [trimmed];
+}
+
 function highlightJava(code) {
   const escaped = code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const KEYWORDS = /\b(public|private|protected|class|static|void|main|String|new|return|if|else|for|while|int|double|boolean|import|package)\b/g;
@@ -1596,6 +1624,10 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   const [interimText, setInterimText] = useState("");
   const [voiceSupported, setVoiceSupported] = useState(true);
   const [typedCode, setTypedCode] = useState("");
+  const typedCodeRef = useRef("");
+  useEffect(() => {
+    typedCodeRef.current = typedCode;
+  }, [typedCode]);
   const [autopilotOn, setAutopilotOn] = useState(true);
   const [ttsNotice, setTtsNotice] = useState("");
   const [aiNotice, setAiNotice] = useState("");
@@ -1843,9 +1875,11 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   );
 
   // Teaches one slide end-to-end: switches to the right view, explains it
-  // (typing code live in sync with real or estimated speech duration),
-  // rides out any interruption, then briefly checks understanding before
-  // handing back control to the autopilot loop.
+  // (typing code live in sync with estimated speech duration), and — if
+  // interrupted by a question — resumes the SAME explanation afterward
+  // rather than abandoning it. Speaking happens sentence-by-sentence
+  // specifically so "resume" means something precise: continue from the
+  // next unspoken sentence, not a guess at some mid-utterance cut point.
   const teachSlide = useCallback(
     async (index) => {
       const targetSlide = curriculum.slides[index];
@@ -1855,14 +1889,42 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       if (!mountedRef.current) return;
       addMessage("lecturer", explanation, "explain");
       setLecturerState2("explaining");
-      if (targetSlide.hasCode) setTypedCode("");
 
-      const completed = await speakInterruptible(explanation, {
-        onDurationKnown: (ms) => {
-          if (targetSlide.hasCode) animateTyping(targetSlide.code, ms, 0);
-        },
-      });
-      if (!mountedRef.current) return;
+      if (targetSlide.hasCode) {
+        setTypedCode("");
+        animateTyping(targetSlide.code, estimateSpeechDurationMs(explanation), 0);
+      }
+
+      const sentences = splitIntoSentences(explanation);
+      let sentenceIndex = 0;
+
+      while (sentenceIndex < sentences.length) {
+        if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        const completed = await speakInterruptible(sentences[sentenceIndex]);
+        if (!mountedRef.current) return;
+
+        if (completed) {
+          sentenceIndex++;
+          continue;
+        }
+
+        // Interrupted mid-sentence: wait for the full question-answer
+        // exchange (including its own acknowledgment) to finish, then
+        // retry this SAME sentence — that's what makes it a genuine
+        // resume rather than skipping ahead to the next slide.
+        setInterrupted(true);
+        await waitForIdle();
+        setInterrupted(false);
+        if (!mountedRef.current || !autopilotEnabledRef.current) return;
+
+        if (targetSlide.hasCode && typedCodeRef.current.length < targetSlide.code.length) {
+          const remainingText = sentences.slice(sentenceIndex).join(" ");
+          animateTyping(targetSlide.code, estimateSpeechDurationMs(remainingText), typedCodeRef.current.length);
+        }
+        setLecturerState2("explaining");
+        // loop retries sentences[sentenceIndex] — not incremented above
+      }
+
       if (targetSlide.hasCode) {
         if (typingIntervalRef.current) {
           clearInterval(typingIntervalRef.current);
@@ -1871,13 +1933,6 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
         setTypedCode(targetSlide.code);
       }
       explainedSlides.current.add(index);
-
-      if (!completed) {
-        setInterrupted(true);
-        await waitForIdle(); // let the question-answer exchange finish first
-        setInterrupted(false);
-        if (!mountedRef.current || !autopilotEnabledRef.current) return;
-      }
 
       // Quick, human "did that land?" check before moving on.
       const isLast = index === curriculum.slides.length - 1;
@@ -1955,12 +2010,32 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
         stopSpeaking();
       }
       setLecturerState2("answering");
+
+      // Instant, no AI call needed — a real instructor says "yes?" before
+      // they've even fully processed the question. Speaking this and
+      // generating the real answer happen concurrently so the answer is
+      // ready (or close to it) by the time the acknowledgment finishes,
+      // rather than adding its speaking time as pure extra latency.
+      const acknowledgments = [
+        `Yes, ${studentName}?`,
+        `Sure, ${studentName} — go ahead.`,
+        `Go ahead, ${studentName}.`,
+        `Yes ${studentName}, what's your question?`,
+      ];
+      const ack = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
+      addMessage("lecturer", ack, "explain");
+      const ackPromise = speakInterruptible(ack);
+
       const answerBudget = Math.max(45, Math.round(wordBudget * 0.6));
       const system = `You are ${lecturerIdentity}. A student just raised their hand and asked a question mid-lecture. Answer it directly and briefly (about ${answerBudget} words). If you were mid-explanation, don't restate everything — just answer, then briefly say you'll continue the lecture. ${NATURAL_SPEECH_STYLE}`;
       const prompt = `You were covering: "${slide.title}" (${slide.notes}). The student asks: "${questionText}"`;
-      const answer = await askLecturer(system, prompt, "Good question — let me pick that up right after this.");
+      const answerPromise = askLecturer(system, prompt, "Good question — let me pick that up right after this.");
+
+      await ackPromise;
       if (!mountedRef.current) return;
-      const safeAnswer = answer;
+      const safeAnswer = await answerPromise;
+      if (!mountedRef.current) return;
+
       addMessage("lecturer", safeAnswer, "answer");
       setLecturerState2("answering");
       await speakInterruptible(safeAnswer);
@@ -2097,7 +2172,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   const handleDownloadNotes = async () => {
     setNotesStatus("generating");
     try {
-      const sections = await generateLectureNotes(curriculum, lecturerIdentity, setNotesProgress);
+      const sections = await generateLectureNotes(curriculum, setNotesProgress);
       if (!mountedRef.current) return;
       await downloadLectureNotesPdf(curriculum, sections);
       setNotesStatus("idle");
