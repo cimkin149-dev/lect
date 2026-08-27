@@ -3,7 +3,7 @@ import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
   Sparkles, Trash2, ArrowRight, GraduationCap, Users, Settings2, RotateCcw,
-  AlertTriangle, Clock, FileDown, Maximize2, Minimize2,
+  AlertTriangle, Clock, FileDown, Maximize2, Minimize2, Flag, CheckCircle2,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -110,6 +110,8 @@ const DEFAULT_COURSE = {
 // persona/voice, module fields carry this specific session's content/pacing.
 function buildRoomData(course, module) {
   return {
+    courseId: course.id,
+    moduleId: module.id,
     curriculum: { code: course.code, title: course.title, unit: module.unit, slides: module.slides },
     settings: {
       courseCode: course.code,
@@ -401,6 +403,46 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
         },
       ]),
     },
+    accessToken
+  );
+}
+
+// AI confidence/escalation: when the AI isn't confident in an answer, the
+// question gets written here (public insert — students have no login) for
+// the owning lecturer to review later (authenticated read/update, RLS-
+// scoped to their own courses). Never blocks the spoken response — always
+// called fire-and-forget, since a failed flag write shouldn't disrupt the
+// live lecture.
+async function flagQuestionForLecturer(courseId, moduleId, studentName, question, answer, slideTitle) {
+  if (!supabaseEnabled() || !courseId || !moduleId) return;
+  try {
+    await supabaseRequest("/flagged_questions", {
+      method: "POST",
+      body: JSON.stringify([
+        {
+          id: makeId("flag"),
+          course_id: courseId,
+          module_id: moduleId,
+          student_name: studentName || null,
+          slide_title: slideTitle || null,
+          question,
+          ai_answer: answer || null,
+        },
+      ]),
+    });
+  } catch (e) {
+    console.error("Failed to flag question for lecturer review:", e);
+  }
+}
+
+async function fetchFlaggedQuestions(courseId, accessToken) {
+  return supabaseRequest(`/flagged_questions?course_id=eq.${encodeURIComponent(courseId)}&select=*&order=created_at.desc`, {}, accessToken);
+}
+
+async function resolveFlaggedQuestion(flagId, accessToken) {
+  await supabaseRequest(
+    `/flagged_questions?id=eq.${encodeURIComponent(flagId)}`,
+    { method: "PATCH", body: JSON.stringify({ resolved: true }) },
     accessToken
   );
 }
@@ -1011,6 +1053,25 @@ Rules:
 ${settings.allowLiveCode ? "" : "- Do not create any code slides (hasCode must be false everywhere) — this lecturer has turned off live code demos.\n"}- If course code / title / unit were provided below, use them as given rather than inventing new ones.`;
 }
 
+// Parses the {confidence, answer} JSON the Q&A prompt asks for. If the
+// model doesn't follow the format (happens occasionally, especially on
+// smaller/faster models), the raw text is treated as the answer itself
+// rather than losing the response entirely — confidence just defaults to
+// "high" in that case, since we have no signal either way.
+function parseAnswerJSON(raw, fallbackAnswer) {
+  if (!raw) return { confidence: "high", answer: fallbackAnswer };
+  const cleaned = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  try {
+    const data = JSON.parse(cleaned);
+    if (data && typeof data.answer === "string" && data.answer.trim()) {
+      return { confidence: data.confidence === "low" ? "low" : "high", answer: data.answer.trim() };
+    }
+  } catch (e) {
+    /* not valid JSON — fall through to treating it as plain answer text */
+  }
+  return { confidence: "high", answer: cleaned || fallbackAnswer };
+}
+
 function parseCurriculumJSON(raw) {
   let cleaned = raw.trim();
   cleaned = cleaned.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
@@ -1572,7 +1633,7 @@ function JoinScreen({ courses, onJoin, onBack }) {
 // far, and the two things a lecturer actually needs from here — add
 // another module to a course, or preview one as a student would see it.
 // Saving a module always lands back here, never in a live session.
-function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut }) {
+function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewFlags }) {
   const statusLabel = {
     connected: { text: "Connected to Supabase — courses persist across refreshes", cls: "ok" },
     loading: { text: "Connecting to Supabase…", cls: "loading" },
@@ -1608,9 +1669,14 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
                 <strong>{course.code}</strong> — {course.title}
                 {course.institution && <span className="setup-optional"> · {course.institution}</span>}
               </div>
-              <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details">
-                <Settings2 size={14} />
-              </button>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="icon-btn" onClick={() => onViewFlags(course)} title="Flagged questions">
+                  <Flag size={14} />
+                </button>
+                <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details">
+                  <Settings2 size={14} />
+                </button>
+              </div>
             </div>
 
             {course.modules.length === 0 ? (
@@ -1637,10 +1703,95 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
   );
 }
 
+// Lecturer-facing view of every question the AI wasn't confident enough to
+// just answer on its own. This is the other half of the escalation system —
+// flagging is useless if nothing ever surfaces it back to a human.
+function FlaggedQuestionsScreen({ course, session, onBack }) {
+  const [flags, setFlags] = useState(null); // null = loading
+  const [error, setError] = useState("");
+
+  const load = useCallback(() => {
+    setFlags(null);
+    setError("");
+    fetchFlaggedQuestions(course.id, session?.accessToken)
+      .then(setFlags)
+      .catch((e) => {
+        setError(e.message || "Couldn't load flagged questions.");
+        setFlags([]);
+      });
+  }, [course.id, session]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const markResolved = async (flagId) => {
+    setFlags((fs) => fs.map((f) => (f.id === flagId ? { ...f, resolved: true } : f)));
+    try {
+      await resolveFlaggedQuestion(flagId, session?.accessToken);
+    } catch (e) {
+      load(); // out of sync with the server — just reload rather than show a wrong state
+    }
+  };
+
+  const unresolved = (flags || []).filter((f) => !f.resolved);
+  const resolved = (flags || []).filter((f) => f.resolved);
+
+  return (
+    <div className="setup-screen">
+      <div className="setup-header">
+        <div className="join-eyebrow">{course.code}</div>
+        <h1 className="join-title">Flagged questions</h1>
+        <p className="join-sub">Questions the AI wasn't confident enough to answer on its own — from every session across this course's modules.</p>
+        <button className="skip-link" onClick={onBack}>← Back to dashboard</button>
+      </div>
+
+      {error && <div className="setup-error"><AlertTriangle size={13} /> {error}</div>}
+
+      {flags === null ? (
+        <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div>
+      ) : flags.length === 0 ? (
+        <div className="empty-hint">No flagged questions yet — nice, means the AI's been confident about what it's answered.</div>
+      ) : (
+        <>
+          {unresolved.length > 0 && (
+            <div className="flag-section">
+              <div className="flag-section-title">Needs review ({unresolved.length})</div>
+              <div className="flag-list">
+                {unresolved.map((f) => (
+                  <div className="flag-card" key={f.id}>
+                    <div className="flag-card-meta">{f.slide_title || "Unknown slide"} · {f.student_name || "Student"} · {new Date(f.created_at).toLocaleDateString()}</div>
+                    <div className="flag-card-question">"{f.question}"</div>
+                    {f.ai_answer && <div className="flag-card-answer">AI said: {f.ai_answer}</div>}
+                    <button className="nav-btn" onClick={() => markResolved(f.id)}><CheckCircle2 size={13} /> Mark resolved</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {resolved.length > 0 && (
+            <div className="flag-section">
+              <div className="flag-section-title">Resolved ({resolved.length})</div>
+              <div className="flag-list">
+                {resolved.map((f) => (
+                  <div className="flag-card resolved" key={f.id}>
+                    <div className="flag-card-meta">{f.slide_title || "Unknown slide"} · {f.student_name || "Student"} · {new Date(f.created_at).toLocaleDateString()}</div>
+                    <div className="flag-card-question">"{f.question}"</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main meeting room
 // ---------------------------------------------------------------------------
-function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditSession }) {
+function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, role, onLeave, onEditSession }) {
   const [slideIndex, setSlideIndex] = useState(0);
   const [viewMode, setViewMode] = useState("slides"); // 'slides' | 'ide'
   const [chatOpen, setChatOpen] = useState(true);
@@ -2059,23 +2210,42 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
       const ackPromise = speakInterruptible(ack);
 
       const answerBudget = Math.max(45, Math.round(wordBudget * 0.6));
-      const system = `You are ${lecturerIdentity}. A student just raised their hand and asked a question mid-lecture. Answer it directly and briefly (about ${answerBudget} words). If you were mid-explanation, don't restate everything — just answer, then briefly say you'll continue the lecture. ${NATURAL_SPEECH_STYLE}`;
+      const fallbackAnswer = "Good question — let me pick that up right after this.";
+      // Structured output so the AI honestly self-assesses whether it
+      // actually knows this, rather than answering everything with the
+      // same undifferentiated confidence. This is the whole point of the
+      // escalation system — an AI that bluffs on institution-specific
+      // logistics or shaky facts isn't trustworthy in a classroom.
+      const system = `You are ${lecturerIdentity}. A student just raised their hand and asked a question mid-lecture.
+
+Return ONLY valid JSON in this exact shape, no markdown fences, no commentary:
+{"confidence": "high" | "low", "answer": "..."}
+
+Set "confidence" to "low" when: the question asks about institution-specific logistics you have no way of knowing (deadlines, grading policy, office hours, assignment details), requires a specific factual claim you're not genuinely sure is correct, or is genuinely outside what this course/slide covers. Set it to "high" for ordinary clarifying questions about the material actually being taught.
+
+Write "answer" to be spoken aloud (about ${answerBudget} words). If confidence is "high", answer directly — don't restate everything, just answer, then briefly say you'll continue the lecture. If confidence is "low": for logistics questions you can't know, say plainly you don't have that information and that you're flagging it for your instructor to follow up on directly — don't guess. For content questions you're just not fully sure about, give an honest best-effort attempt but clearly say you're not fully certain and that you're flagging it for your instructor to confirm.
+
+${NATURAL_SPEECH_STYLE}`;
       const prompt = `You were covering: "${slide.title}" (${slide.notes}). The student asks: "${questionText}"`;
-      const answerPromise = askLecturer(system, prompt, "Good question — let me pick that up right after this.");
+      const answerPromise = askLecturer(system, prompt, fallbackAnswer);
 
       await ackPromise;
       if (!mountedRef.current) return;
-      const safeAnswer = await answerPromise;
+      const rawAnswer = await answerPromise;
       if (!mountedRef.current) return;
+      const { confidence, answer: safeAnswer } = parseAnswerJSON(rawAnswer, fallbackAnswer);
 
-      addMessage("lecturer", safeAnswer, "answer");
+      addMessage("lecturer", safeAnswer, confidence === "low" ? "answer-flagged" : "answer");
+      if (confidence === "low") {
+        flagQuestionForLecturer(courseId, moduleId, studentName, questionText, safeAnswer, slide.title);
+      }
       setLecturerState2("answering");
       await speakInterruptible(safeAnswer);
       if (!mountedRef.current) return;
       setLecturerState2("idle");
       setHandRaised(false);
     },
-    [studentName, slide, lecturerIdentity, wordBudget, speakInterruptible, stopSpeaking, askLecturer]
+    [studentName, slide, lecturerIdentity, wordBudget, speakInterruptible, stopSpeaking, askLecturer, courseId, moduleId]
   );
 
   const continueTypingCode = useCallback(() => {
@@ -2371,6 +2541,9 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
                 <div key={m.id} className={`msg msg-${m.type}`}>
                   <div className="msg-speaker">{m.speaker === "lecturer" ? "Lecturer" : m.speaker}</div>
                   <div className="msg-text">{m.text}</div>
+                  {m.type === "answer-flagged" && (
+                    <div className="msg-flag-note">🚩 Not fully certain — flagged for your instructor to follow up on</div>
+                  )}
                 </div>
               ))}
               <div ref={messagesEndRef} />
@@ -2434,11 +2607,12 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
 // navigating back and forth (e.g. lecturer editing session mid-demo).
 // ---------------------------------------------------------------------------
 export default function SEMAIApp() {
-  const [stage, setStage] = useState("role"); // role | auth | dashboard | courseMeta | moduleSetup | join | room
+  const [stage, setStage] = useState("role"); // role | auth | dashboard | flags | courseMeta | moduleSetup | join | room
   const [role, setRole] = useState(null);
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [courseDraft, setCourseDraft] = useState(null);
+  const [flagsCourse, setFlagsCourse] = useState(null);
   const [editingCourse, setEditingCourse] = useState(false);
   const [roomData, setRoomData] = useState(null); // { curriculum, settings }
   const [studentName, setStudentName] = useState("Student");
@@ -2621,7 +2795,14 @@ export default function SEMAIApp() {
           onPreviewModule={handlePreviewModule}
           onBack={() => setStage("role")}
           onSignOut={session ? handleSignOut : null}
+          onViewFlags={(course) => {
+            setFlagsCourse(course);
+            setStage("flags");
+          }}
         />
+      )}
+      {stage === "flags" && flagsCourse && (
+        <FlaggedQuestionsScreen course={flagsCourse} session={session} onBack={() => setStage("dashboard")} />
       )}
       {stage === "courseMeta" && courseDraft && (
         <CourseMetaScreen
@@ -2647,6 +2828,8 @@ export default function SEMAIApp() {
         <LectureRoom
           curriculum={roomData.curriculum}
           settings={roomData.settings}
+          courseId={roomData.courseId}
+          moduleId={roomData.moduleId}
           studentName={studentName}
           role={role}
           onLeave={handleLeaveRoom}
@@ -2710,6 +2893,15 @@ function GlobalStyles() {
       .module-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #1A1F27; border: 1px solid #232A34; border-radius: 9px; }
       .module-row-title { font-size: 13px; color: #EDEFF2; margin-bottom: 2px; }
       .module-row-meta { font-size: 11px; color: #565E6B; }
+      .flag-section { margin-bottom: 24px; }
+      .flag-section-title { font-size: 12px; font-weight: 600; color: #8B93A1; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+      .flag-list { display: flex; flex-direction: column; gap: 10px; }
+      .flag-card { background: #1E2530; border: 1px solid #232A34; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+      .flag-card.resolved { opacity: 0.55; }
+      .flag-card-meta { font-size: 11px; color: #565E6B; }
+      .flag-card-question { font-size: 14px; color: #EDEFF2; font-style: italic; }
+      .flag-card-answer { font-size: 12.5px; color: #9AA2AF; line-height: 1.5; }
+      .flag-card .nav-btn { align-self: flex-start; margin-top: 4px; }
       .preview-actions-right { display: flex; gap: 10px; }
       .setup-label { font-size: 12px; font-weight: 600; color: #8B93A1; display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
       .setup-optional { font-weight: 400; color: #565E6B; text-transform: none; letter-spacing: 0; }
@@ -2827,6 +3019,8 @@ function GlobalStyles() {
       .msg-answer .msg-speaker, .msg-explain .msg-speaker { color: #E8A33D; }
       .msg-system { opacity: 0.8; }
       .msg-system .msg-speaker { color: #F0A0A0; }
+      .msg-answer-flagged .msg-speaker { color: #E8A33D; }
+      .msg-flag-note { font-size: 11px; color: #E8A33D; margin-top: 5px; }
       .side-input-wrap { flex: 0 0 auto; border-top: 1px solid #232A34; }
       .listening-banner { display: flex; align-items: center; gap: 6px; padding: 8px 16px 0; font-size: 11px; color: #E8A33D; }
       .listening-banner em { color: #C7CCD4; font-style: normal; }

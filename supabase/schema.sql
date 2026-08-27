@@ -54,3 +54,29 @@ create policy "public update courses" on courses for update using (true);
 
 create policy "public read modules" on modules for select using (true);
 create policy "public write modules" on modules for insert with check (true);
+
+-- Added for the AI confidence/escalation feature: when the AI isn't
+-- confident in an answer, the question gets flagged here for the owning
+-- lecturer to review and follow up on directly.
+create table if not exists flagged_questions (
+  id text primary key,
+  course_id text not null references courses(id) on delete cascade,
+  module_id text not null references modules(id) on delete cascade,
+  student_name text,
+  slide_title text,
+  question text not null,
+  ai_answer text,
+  resolved boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table flagged_questions enable row level security;
+
+create policy "anyone can flag a question" on flagged_questions
+  for insert with check (true);
+
+create policy "owners can read flags for their own courses" on flagged_questions
+  for select using (course_id in (select id from courses where owner_id = auth.uid()));
+
+create policy "owners can resolve flags for their own courses" on flagged_questions
+  for update using (course_id in (select id from courses where owner_id = auth.uid()));
