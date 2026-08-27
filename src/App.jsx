@@ -25,10 +25,13 @@ const DEFAULT_CURRICULUM = {
     {
       title: "What is Java?",
       bullets: [
-        "A general-purpose, object-oriented programming language",
-        "\"Write once, run anywhere\" — runs on the Java Virtual Machine (JVM)",
-        "Used for web backends, Android apps, enterprise systems",
+        "A general-purpose, object-oriented programming language used across web, mobile, and enterprise software",
+        "\"Write once, run anywhere\" — compiled code runs on any device with a Java Virtual Machine (JVM)",
+        "Created by Sun Microsystems in 1995; now maintained by Oracle under active development",
+        "Statically typed and strongly object-oriented, which encourages organized, maintainable code",
       ],
+      detail:
+        "Java's defining design goal was portability: rather than compiling directly to a specific machine's instructions, Java compiles to an intermediate form called bytecode, which the JVM interprets on whatever device it's running on. This is why the same compiled .class file runs unmodified on Windows, macOS, Linux, or Android. That design choice, combined with strict object-oriented structure, made Java a common default for large, long-lived enterprise systems where portability and maintainability matter more than raw execution speed.",
       notes:
         "Explain what Java is, why it was designed to be platform-independent, and what the JVM does in plain terms a first-year student would understand. Be warm and conversational, like a lecturer speaking out loud, not a textbook.",
       hasCode: false,
@@ -36,10 +39,13 @@ const DEFAULT_CURRICULUM = {
     {
       title: "Setting Up: JDK & Compiling",
       bullets: [
-        "JDK = Java Development Kit (compiler + tools)",
-        "javac compiles .java files into .class bytecode",
-        "java runs the compiled bytecode on the JVM",
+        "JDK = Java Development Kit — bundles the compiler, JVM, and standard libraries",
+        "javac compiles human-readable .java source files into .class bytecode files",
+        "The java command loads that bytecode and runs it on the JVM",
+        "This two-step compile-then-run cycle is fundamental to every Java program you'll write",
       ],
+      detail:
+        "It helps to think of this as two distinct stages with two distinct tools. Compiling with javac checks your syntax and translates it into bytecode — it doesn't run anything yet, it just produces a file. Running with java is a separate step that hands that bytecode to the JVM, which interprets it line by line (or increasingly, compiles hot paths to native code on the fly for speed). Beginners often expect one command to do both, so it's worth being explicit that these are always two separate steps.",
       notes:
         "Explain the compile-then-run workflow for Java (javac then java) and what bytecode is, in plain simple terms. Conversational lecturer tone.",
       hasCode: false,
@@ -47,10 +53,13 @@ const DEFAULT_CURRICULUM = {
     {
       title: "Your First Program",
       bullets: [
-        "Every Java app needs a class with a main method",
-        "public static void main(String[] args) is the entry point",
-        "System.out.println() prints to the console",
+        "Every runnable Java app needs a class containing a main method",
+        "public static void main(String[] args) is the fixed entry point the JVM looks for",
+        "System.out.println() writes a line of text to the console",
+        "Class name must exactly match the filename — HelloWorld lives in HelloWorld.java",
       ],
+      detail:
+        "The exact signature of main matters more than it might seem: public so the JVM (outside your class) can call it, static so it can be called without first creating an instance of the class, void because it doesn't return a value back to the JVM, and String[] args to receive command-line arguments if any are passed in. Getting any part of that signature wrong means the JVM won't recognize it as an entry point at all, which is a common early debugging trap.",
       notes:
         "Walk the student through the classic HelloWorld.java program shown in the code editor. Explain what 'public class', 'public static void main', and 'System.out.println' each do, briefly, like you're pointing at the code while talking. Conversational lecturer tone.",
       hasCode: true,
@@ -408,7 +417,13 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
 // ---------------------------------------------------------------------------
 const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemini-proxy";
 
-async function callAI(systemPrompt, userPrompt, maxTokens) {
+// The full (non-lite) model — used only for the rare, high-value generation
+// calls (curriculum authoring, post-lecture notes) where content richness
+// matters more than the per-call cost/speed that the lite default optimizes
+// for live, real-time lecture delivery.
+const GEMINI_MODEL_STRONG = "gemini-3.5-flash";
+
+async function callAI(systemPrompt, userPrompt, maxTokens, model) {
   if (!AI_PROXY_URL) {
     throw new Error("AI_PROXY_URL isn't configured — deploy the Edge Function and set it near the top of App.jsx.");
   }
@@ -420,7 +435,7 @@ async function callAI(systemPrompt, userPrompt, maxTokens) {
       // project JWT to invoke — the anon key satisfies that.
       ...(SUPABASE_ANON_KEY ? { Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY } : {}),
     },
-    body: JSON.stringify({ system: systemPrompt, prompt: userPrompt, ...(maxTokens ? { maxTokens } : {}) }),
+    body: JSON.stringify({ system: systemPrompt, prompt: userPrompt, ...(maxTokens ? { maxTokens } : {}), ...(model ? { model } : {}) }),
   });
   const data = await response.json();
   if (data && data.rateLimited) {
@@ -462,11 +477,11 @@ For the given topic, write a well-structured explanation covering, where relevan
 
 Write 3-5 well-developed paragraphs of formal written prose. No markdown formatting, no bullet points, no headers — plain paragraphs, since this is typeset directly into a PDF as body text.`;
     const prompt = slide.hasCode
-      ? `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}. Write the study-guide entry for this topic, and as part of it explain this code example in depth — what each part does and why: ${slide.code}`
-      : `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}. Write the study-guide entry for this topic.`;
+      ? `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}.${slide.detail ? ` On-screen supporting text: ${slide.detail}` : ""} Write the study-guide entry for this topic, and as part of it explain this code example in depth — what each part does and why: ${slide.code}`
+      : `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}.${slide.detail ? ` On-screen supporting text: ${slide.detail}` : ""} Write the study-guide entry for this topic.`;
     let explanation;
     try {
-      explanation = await callAI(system, prompt, 1500);
+      explanation = await callAI(system, prompt, 1500, GEMINI_MODEL_STRONG);
       if (!explanation) throw new Error("empty response");
     } catch (e) {
       explanation = "Detailed notes for this section couldn't be generated right now — please refer to the key points covered during the live session.";
@@ -959,7 +974,7 @@ function buildCurriculumSystemPrompt(settings, estimatedWordBudget) {
   const duration = Number(settings.durationMinutes) || 45;
   // Rough floor/ceiling so the AI errs toward a genuinely thorough deck
   // instead of compressing a whole session into a handful of slides —
-  // the previous version left slide count entirely open-ended and the
+  // an earlier version left slide count entirely open-ended and the
   // result was consistently too sparse.
   const minSlides = Math.max(5, Math.round(duration / 6));
   const maxSlides = Math.max(9, Math.round(duration / 3));
@@ -975,7 +990,8 @@ Schema:
   "slides": [
     {
       "title": string,
-      "bullets": string[],      // 4-7 substantive bullets, what appears on screen
+      "bullets": string[],      // 5-8 substantive bullets, what appears on screen
+      "detail": string,         // a short paragraph (3-5 sentences) of on-screen supporting text, shown below the bullets — formal written prose expanding on the topic, NOT a repeat of the bullets in sentence form
       "notes": string,          // INSTRUCTIONS to the AI lecturer for how to narrate this slide out loud (not the narration itself) — what to cover, in what order, specific examples or common misconceptions to mention. Written as guidance, e.g. "Explain X, then contrast it with Y using a short example — many students confuse this with Z, so address that directly."
       "hasCode": boolean,
       "code": string | null     // only if hasCode is true — a clean, correct, well-commented runnable code example
@@ -985,7 +1001,9 @@ Schema:
 
 Rules:
 - Build a genuinely thorough deck: for a ${duration}-minute session, that's typically around ${minSlides}-${maxSlides} slides. Err toward more, focused slides rather than compressing everything into a few dense ones — split one source topic into several slides (e.g. "definition", "how it works", "worked example") when that gives students a clearer, more complete picture. Don't force a rigid 1-to-1 mapping with the source material either way — split dense source units, merge sparse ones, but the FINAL slide count should reflect real depth, not just how the source happened to be chunked.
-- Each slide's "bullets" must be genuinely informative, not telegraphic fragments — write real, complete points (roughly a full sentence or a rich phrase each), specific enough that a student could understand the core idea from the bullets alone, without hearing the lecture. Avoid vague filler bullets.
+- Never settle for the low end of any range given here — treat these as minimums to clear comfortably, not targets. A slide with only 3-4 short bullets and no detail paragraph is a FAILURE case for this task, regardless of how sparse the source material was — if the source is thin, use your own subject-matter knowledge to add genuinely correct, relevant depth (background, context, a standard example) rather than leaving a slide sparse.
+- Each slide's "bullets" must be genuinely informative, not telegraphic fragments — write real, complete points (a full sentence or a rich phrase each, roughly 10-20 words), specific enough that a student could understand the core idea from the bullets alone, without hearing the lecture.
+- Every slide's "detail" paragraph must add real substance beyond the bullets — background, elaboration, a concrete example, or context for why the concept matters. Do not just reword the bullets into sentences.
 - The "notes" field should give the lecturer enough to deliver a full, well-developed explanation — specific examples, common misconceptions worth addressing, or points of emphasis, not just "explain X."
 - Every "notes" field must explicitly tell the lecturer to keep the spoken explanation to about ${estimatedWordBudget} words — adjust proportionally if your final slide count differs noticeably from the source unit count.
 - The lecturer's tone should be ${tone.desc}.
@@ -1012,6 +1030,7 @@ function parseCurriculumJSON(raw) {
     slides: data.slides.map((s, i) => ({
       title: s.title || `Slide ${i + 1}`,
       bullets: Array.isArray(s.bullets) ? s.bullets.filter(Boolean) : [],
+      detail: s.detail || "",
       notes: s.notes || "",
       hasCode: !!(s.hasCode && s.code),
       code: s.hasCode ? (s.code || "") : undefined,
@@ -1030,7 +1049,12 @@ Target total lecture length: ${settings.durationMinutes} minutes.
 Source material, in order:
 
 ${rawUnits.map((u, i) => `--- Unit ${i + 1} ---\n${u}`).join("\n\n")}`;
-  const raw = await callAI(system, user, 8000);
+  // Full (non-lite) model: curriculum authoring happens once per module,
+  // not per lecture turn, so the extra cost is trivial — and this is
+  // exactly the kind of "follow an elaborate content-richness instruction"
+  // task where the lite-tier model was under-shooting even explicit asks
+  // for more detail.
+  const raw = await callAI(system, user, 16000, GEMINI_MODEL_STRONG);
   if (!raw) throw new Error("No response from the AI — check your connection and try again.");
   return parseCurriculumJSON(raw);
 }
@@ -1395,6 +1419,13 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                   value={s.bullets.join("\n")}
                   onChange={(e) => editSlide(i, { bullets: e.target.value.split("\n") })}
                   placeholder="One bullet per line…"
+                />
+                <textarea
+                  className="slide-card-notes"
+                  rows={2}
+                  value={s.detail || ""}
+                  onChange={(e) => editSlide(i, { detail: e.target.value })}
+                  placeholder="On-screen supporting paragraph shown below the bullets…"
                 />
                 <textarea
                   className="slide-card-notes"
@@ -1866,9 +1897,10 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
   const generateExplanation = useCallback(
     async (targetSlide) => {
       const system = `You are ${lecturerIdentity}. You are mid-lecture, speaking out loud to a room of students. Keep this explanation to about ${wordBudget} words. ${NATURAL_SPEECH_STYLE}`;
+      const detailContext = targetSlide.detail ? ` On-screen supporting text: ${targetSlide.detail}` : "";
       const prompt = targetSlide.hasCode
-        ? `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes} You are about to type this code live on screen while you talk: ${targetSlide.code} Narrate it roughly in the order it will be typed, top to bottom, like you're writing it in front of the class.`
-        : `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}`;
+        ? `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext} You are about to type this code live on screen while you talk: ${targetSlide.code} Narrate it roughly in the order it will be typed, top to bottom, like you're writing it in front of the class.`
+        : `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext}`;
       return askLecturer(system, prompt, "Sorry, I lost my train of thought for a moment — let's continue.");
     },
     [lecturerIdentity, wordBudget, askLecturer]
@@ -2271,6 +2303,7 @@ function LectureRoom({ curriculum, settings, studentName, role, onLeave, onEditS
                     <li key={i}>{b}</li>
                   ))}
                 </ul>
+                {slide.detail && <p className="slide-detail">{slide.detail}</p>}
                 {interrupted && lecturerState !== "idle" && (
                   <div className="paused-ribbon">Paused mid-explanation to answer a question — will continue after</div>
                 )}
@@ -2745,6 +2778,7 @@ function GlobalStyles() {
       .slide h2 { font-family: 'Space Grotesk', sans-serif; font-size: 30px; margin: 0 0 22px; line-height: 1.25; transition: font-size 0.25s ease; }
       .slide ul { margin: 0; padding-left: 22px; color: #C7CCD4; line-height: 2; font-size: 16px; transition: font-size 0.25s ease; }
       .slide ul li { margin-bottom: 10px; }
+      .slide-detail { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid #2A313C; color: #9AA2AF; font-size: 14.5px; line-height: 1.8; }
       .paused-ribbon { margin-top: 18px; padding: 8px 12px; background: rgba(232,163,61,0.12); border: 1px solid rgba(232,163,61,0.35); color: #E8A33D; font-size: 12px; border-radius: 8px; }
 
       /* Presentation mode: tiles hidden, everything else scales up so the
@@ -2758,6 +2792,7 @@ function GlobalStyles() {
       .room.presentation .slide h2 { font-size: 46px; margin-bottom: 32px; }
       .room.presentation .slide ul { font-size: 22px; line-height: 2.15; }
       .room.presentation .slide ul li { margin-bottom: 16px; }
+      .room.presentation .slide-detail { font-size: 18px; margin-top: 24px; padding-top: 20px; }
 
       .ide { display: flex; flex-direction: column; height: 100%; }
       .ide-bar { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8B93A1; margin-bottom: 10px; border-bottom: 1px solid #232A34; padding-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }

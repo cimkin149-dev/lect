@@ -13,15 +13,16 @@
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
 
-// gemini-2.5-flash is scheduled to shut down October 16, 2026 — don't use
-// it. 3.5 Flash-Lite is the current cost/latency-optimized model, a good
-// fit for a free-tier app doing many small requests; swap in
-// "gemini-3.6-flash" for noticeably better quality at higher cost and lower
-// free-tier headroom. Check https://ai.google.dev/gemini-api/docs/models
-// for the current lineup before relying on either long-term — Google ships
-// new Flash versions every few months and deprecates old ones on a similar
-// cadence.
-const GEMINI_MODEL = "gemini-3.5-flash-lite";
+// Fast/cheap default for the frequent, real-time calls during a live
+// lecture (one per slide, one per question). "Lite" tier models are tuned
+// for speed/cost and — this turned out to matter — tend to under-shoot
+// requests for longer, richer content even when explicitly instructed
+// otherwise, which is why curriculum generation below overrides to the
+// full (non-lite) model instead. gemini-2.5-flash is scheduled to shut
+// down October 16, 2026 — don't use it. Check
+// https://ai.google.dev/gemini-api/docs/models for the current lineup
+// before relying on either long-term.
+const GEMINI_MODEL_DEFAULT = "gemini-3.5-flash-lite";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -45,13 +46,13 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { system, prompt, maxTokens } = await req.json();
-    // Bounded regardless of what the client sends — most calls (live
-    // lecture lines) want the default short budget; lecture-notes
-    // generation asks for more room explicitly.
-    const outputTokens = Math.max(200, Math.min(8000, Number(maxTokens) || 1000));
+    const { system, prompt, maxTokens, model } = await req.json();
+    // Both models support up to 65,536 output tokens; this ceiling is just
+    // a sane upper bound for our use cases, not the model's real limit.
+    const outputTokens = Math.max(200, Math.min(16000, Number(maxTokens) || 1000));
+    const modelId = model || GEMINI_MODEL_DEFAULT;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${GEMINI_API_KEY}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
