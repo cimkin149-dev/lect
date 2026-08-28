@@ -447,6 +447,40 @@ async function resolveFlaggedQuestion(flagId, accessToken) {
   );
 }
 
+// Written once, at the end of a session (either it completes naturally or
+// the student leaves early) — public insert, no login required, same
+// reasoning as flagging a question. Fire-and-forget; a failed write
+// shouldn't block anyone from leaving the room.
+async function recordSession(session) {
+  if (!supabaseEnabled() || !session.courseId || !session.moduleId) return;
+  try {
+    await supabaseRequest("/sessions", {
+      method: "POST",
+      body: JSON.stringify([
+        {
+          id: makeId("session"),
+          course_id: session.courseId,
+          module_id: session.moduleId,
+          student_name: session.studentName || null,
+          completed: session.completed,
+          slides_reached: session.slidesReached,
+          total_slides: session.totalSlides,
+          question_count: session.questionCount,
+          transcript: session.transcript,
+          summary: session.summary || null,
+          started_at: session.startedAt,
+        },
+      ]),
+    });
+  } catch (e) {
+    console.error("Failed to record session:", e);
+  }
+}
+
+async function fetchSessions(courseId, accessToken) {
+  return supabaseRequest(`/sessions?course_id=eq.${encodeURIComponent(courseId)}&select=*&order=ended_at.desc`, {}, accessToken);
+}
+
 // ---------------------------------------------------------------------------
 // AI backend — routes through the Supabase Edge Function proxy, which holds
 // the real Gemini API key server-side (see supabase/functions/gemini-proxy).
@@ -531,6 +565,24 @@ Write 3-5 well-developed paragraphs of formal written prose. No markdown formatt
     sections.push({ title: slide.title, explanation, code: slide.hasCode ? slide.code : null });
   }
   return sections;
+}
+
+// Deliberately on the default (lite) model, unlike curriculum/notes
+// generation — this runs once per completed STUDENT session, not once per
+// module a lecturer authors, so volume scales with class size rather than
+// lecturer actions. A 30-student lecture means 30 of these; using the
+// stronger model here would meaningfully increase both cost and exposure
+// to free-tier rate limits for no real accuracy benefit on a short summary.
+async function generateSessionSummary(curriculum, messages) {
+  if (!messages || messages.length === 0) return "";
+  const transcript = messages.map((m) => `${m.speaker === "lecturer" ? "Lecturer" : "Student"}: ${m.text}`).join("\n");
+  const system = `You are summarizing a completed AI-led lecture session for the instructor who owns this course, to skim on a dashboard. Write 2-4 concise sentences covering: what was taught, what the student asked about (if anything), and anything notable (e.g. the AI was uncertain about something and flagged it). Plain prose, no markdown, written for a busy instructor, not the student.`;
+  const prompt = `Course: ${curriculum.code} — ${curriculum.unit}. Full session transcript:\n${transcript.slice(0, 6000)}`;
+  try {
+    return await callAI(system, prompt, 300);
+  } catch (e) {
+    return "";
+  }
 }
 
 function addPdfFooter(doc, pageNum) {
@@ -1633,7 +1685,7 @@ function JoinScreen({ courses, onJoin, onBack }) {
 // far, and the two things a lecturer actually needs from here — add
 // another module to a course, or preview one as a student would see it.
 // Saving a module always lands back here, never in a live session.
-function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewFlags }) {
+function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewInsights }) {
   const statusLabel = {
     connected: { text: "Connected to Supabase — courses persist across refreshes", cls: "ok" },
     loading: { text: "Connecting to Supabase…", cls: "loading" },
@@ -1670,7 +1722,7 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
                 {course.institution && <span className="setup-optional"> · {course.institution}</span>}
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button className="icon-btn" onClick={() => onViewFlags(course)} title="Flagged questions">
+                <button className="icon-btn" onClick={() => onViewInsights(course)} title="Course insights — sessions & flagged questions">
                   <Flag size={14} />
                 </button>
                 <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details">
@@ -1703,20 +1755,30 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
   );
 }
 
-// Lecturer-facing view of every question the AI wasn't confident enough to
-// just answer on its own. This is the other half of the escalation system —
-// flagging is useless if nothing ever surfaces it back to a human.
-function FlaggedQuestionsScreen({ course, session, onBack }) {
-  const [flags, setFlags] = useState(null); // null = loading
+// Lecturer-facing analytics: session history (who attended, how far they
+// got, an AI summary, the full transcript on demand) plus every question
+// the AI wasn't confident enough to answer on its own. Flagging is useless
+// if nothing ever surfaces it back to a human, and a lecture leaves no
+// trace at all without this — this is what a department asks to see in
+// week one of any real pilot.
+function CourseInsightsScreen({ course, session, onBack }) {
+  const [sessions, setSessions] = useState(null); // null = loading
+  const [flags, setFlags] = useState(null);
   const [error, setError] = useState("");
+  const [expandedSessionId, setExpandedSessionId] = useState(null);
 
   const load = useCallback(() => {
+    setSessions(null);
     setFlags(null);
     setError("");
-    fetchFlaggedQuestions(course.id, session?.accessToken)
-      .then(setFlags)
+    Promise.all([fetchSessions(course.id, session?.accessToken), fetchFlaggedQuestions(course.id, session?.accessToken)])
+      .then(([s, f]) => {
+        setSessions(s);
+        setFlags(f);
+      })
       .catch((e) => {
-        setError(e.message || "Couldn't load flagged questions.");
+        setError(e.message || "Couldn't load course insights.");
+        setSessions([]);
         setFlags([]);
       });
   }, [course.id, session]);
@@ -1734,31 +1796,77 @@ function FlaggedQuestionsScreen({ course, session, onBack }) {
     }
   };
 
-  const unresolved = (flags || []).filter((f) => !f.resolved);
-  const resolved = (flags || []).filter((f) => f.resolved);
+  const unresolvedFlags = (flags || []).filter((f) => !f.resolved);
+  const resolvedFlags = (flags || []).filter((f) => f.resolved);
+
+  const totalSessions = (sessions || []).length;
+  const completedSessions = (sessions || []).filter((s) => s.completed).length;
+  const completionRate = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : null;
+  const avgQuestions = totalSessions > 0 ? (sessions.reduce((sum, s) => sum + (s.question_count || 0), 0) / totalSessions).toFixed(1) : null;
 
   return (
     <div className="setup-screen">
       <div className="setup-header">
         <div className="join-eyebrow">{course.code}</div>
-        <h1 className="join-title">Flagged questions</h1>
-        <p className="join-sub">Questions the AI wasn't confident enough to answer on its own — from every session across this course's modules.</p>
+        <h1 className="join-title">Course insights</h1>
+        <p className="join-sub">Session history and flagged questions across every module in this course.</p>
         <button className="skip-link" onClick={onBack}>← Back to dashboard</button>
       </div>
 
       {error && <div className="setup-error"><AlertTriangle size={13} /> {error}</div>}
 
-      {flags === null ? (
+      {sessions === null ? (
         <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div>
-      ) : flags.length === 0 ? (
-        <div className="empty-hint">No flagged questions yet — nice, means the AI's been confident about what it's answered.</div>
       ) : (
         <>
-          {unresolved.length > 0 && (
-            <div className="flag-section">
-              <div className="flag-section-title">Needs review ({unresolved.length})</div>
+          {totalSessions > 0 && (
+            <div className="stats-row">
+              <div className="stat-card"><div className="stat-value">{totalSessions}</div><div className="stat-label">Sessions</div></div>
+              <div className="stat-card"><div className="stat-value">{completionRate}%</div><div className="stat-label">Completion rate</div></div>
+              <div className="stat-card"><div className="stat-value">{avgQuestions}</div><div className="stat-label">Avg. questions asked</div></div>
+              <div className="stat-card"><div className="stat-value">{unresolvedFlags.length}</div><div className="stat-label">Unresolved flags</div></div>
+            </div>
+          )}
+
+          <div className="flag-section">
+            <div className="flag-section-title">Sessions</div>
+            {totalSessions === 0 ? (
+              <div className="empty-hint">No sessions recorded yet — this fills in once a student attends a lecture.</div>
+            ) : (
               <div className="flag-list">
-                {unresolved.map((f) => (
+                {sessions.map((s) => (
+                  <div className="flag-card" key={s.id}>
+                    <div className="flag-card-meta">
+                      {s.student_name || "Student"} · {new Date(s.ended_at).toLocaleString()} ·{" "}
+                      <span className={s.completed ? "session-badge complete" : "session-badge incomplete"}>
+                        {s.completed ? "Completed" : `Left early (${s.slides_reached}/${s.total_slides} slides)`}
+                      </span>{" "}
+                      · {s.question_count} question{s.question_count === 1 ? "" : "s"}
+                    </div>
+                    {s.summary && <div className="flag-card-answer">{s.summary}</div>}
+                    <button className="nav-btn" onClick={() => setExpandedSessionId((id) => (id === s.id ? null : s.id))}>
+                      {expandedSessionId === s.id ? "Hide transcript" : "View transcript"}
+                    </button>
+                    {expandedSessionId === s.id && (
+                      <div className="session-transcript">
+                        {(s.transcript || []).map((m, i) => (
+                          <div key={i} className="session-transcript-line">
+                            <strong>{m.speaker === "lecturer" ? "Lecturer" : m.speaker}:</strong> {m.text}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {unresolvedFlags.length > 0 && (
+            <div className="flag-section">
+              <div className="flag-section-title">Needs review ({unresolvedFlags.length})</div>
+              <div className="flag-list">
+                {unresolvedFlags.map((f) => (
                   <div className="flag-card" key={f.id}>
                     <div className="flag-card-meta">{f.slide_title || "Unknown slide"} · {f.student_name || "Student"} · {new Date(f.created_at).toLocaleDateString()}</div>
                     <div className="flag-card-question">"{f.question}"</div>
@@ -1769,11 +1877,11 @@ function FlaggedQuestionsScreen({ course, session, onBack }) {
               </div>
             </div>
           )}
-          {resolved.length > 0 && (
+          {resolvedFlags.length > 0 && (
             <div className="flag-section">
-              <div className="flag-section-title">Resolved ({resolved.length})</div>
+              <div className="flag-section-title">Resolved ({resolvedFlags.length})</div>
               <div className="flag-list">
-                {resolved.map((f) => (
+                {resolvedFlags.map((f) => (
                   <div className="flag-card resolved" key={f.id}>
                     <div className="flag-card-meta">{f.slide_title || "Unknown slide"} · {f.student_name || "Student"} · {new Date(f.created_at).toLocaleDateString()}</div>
                     <div className="flag-card-question">"{f.question}"</div>
@@ -1835,6 +1943,12 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, ro
   const autopilotRunningRef = useRef(false);
   const introDoneRef = useRef(false);
   const mountedRef = useRef(true);
+  const sessionRecordedRef = useRef(false);
+  const sessionStartedAtRef = useRef(new Date().toISOString());
+  const messagesRef = useRef([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { slideIndexRef.current = slideIndex; }, [slideIndex]);
@@ -2185,6 +2299,45 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, ro
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autopilotOn, curriculum]);
+
+  // Records the session once — either when it completes naturally or when
+  // the student leaves early — never both (guarded by sessionRecordedRef).
+  // Skips lecturer preview sessions so testing doesn't pollute a course's
+  // real analytics.
+  const finalizeSession = useCallback(
+    async (completed) => {
+      if (sessionRecordedRef.current) return;
+      if (role === "lecturer") return;
+      if (!supabaseEnabled() || !courseId || !moduleId) return;
+      sessionRecordedRef.current = true;
+      const currentMessages = messagesRef.current;
+      const questionCount = currentMessages.filter((m) => m.type === "question").length;
+      const slidesReached = completed ? curriculum.slides.length : slideIndexRef.current + 1;
+      const summary = await generateSessionSummary(curriculum, currentMessages);
+      await recordSession({
+        courseId,
+        moduleId,
+        studentName,
+        completed,
+        slidesReached,
+        totalSlides: curriculum.slides.length,
+        questionCount,
+        transcript: currentMessages.map(({ speaker, text, type }) => ({ speaker, text, type })),
+        summary,
+        startedAt: sessionStartedAtRef.current,
+      });
+    },
+    [role, courseId, moduleId, curriculum, studentName]
+  );
+
+  useEffect(() => {
+    if (sessionComplete) finalizeSession(true);
+  }, [sessionComplete, finalizeSession]);
+
+  const handleLeaveClick = () => {
+    finalizeSession(false); // fire-and-forget — don't block leaving the room on this
+    onLeave();
+  };
 
   const handleQuestion = useCallback(
     async (questionText) => {
@@ -2593,7 +2746,7 @@ ${NATURAL_SPEECH_STYLE}`;
         <button className={`ctrl ${chatOpen ? "on" : ""}`} onClick={() => setChatOpen((v) => !v)} title="Chat">
           <MessageSquare size={18} />
         </button>
-        <button className="ctrl leave labeled" onClick={onLeave} title="Leave the meeting">
+        <button className="ctrl leave labeled" onClick={handleLeaveClick} title="Leave the meeting">
           <PhoneOff size={18} /> <span>Leave</span>
         </button>
       </div>
@@ -2612,7 +2765,7 @@ export default function SEMAIApp() {
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [courseDraft, setCourseDraft] = useState(null);
-  const [flagsCourse, setFlagsCourse] = useState(null);
+  const [insightsCourse, setInsightsCourse] = useState(null);
   const [editingCourse, setEditingCourse] = useState(false);
   const [roomData, setRoomData] = useState(null); // { curriculum, settings }
   const [studentName, setStudentName] = useState("Student");
@@ -2795,14 +2948,14 @@ export default function SEMAIApp() {
           onPreviewModule={handlePreviewModule}
           onBack={() => setStage("role")}
           onSignOut={session ? handleSignOut : null}
-          onViewFlags={(course) => {
-            setFlagsCourse(course);
+          onViewInsights={(course) => {
+            setInsightsCourse(course);
             setStage("flags");
           }}
         />
       )}
-      {stage === "flags" && flagsCourse && (
-        <FlaggedQuestionsScreen course={flagsCourse} session={session} onBack={() => setStage("dashboard")} />
+      {stage === "flags" && insightsCourse && (
+        <CourseInsightsScreen course={insightsCourse} session={session} onBack={() => setStage("dashboard")} />
       )}
       {stage === "courseMeta" && courseDraft && (
         <CourseMetaScreen
@@ -2902,6 +3055,18 @@ function GlobalStyles() {
       .flag-card-question { font-size: 14px; color: #EDEFF2; font-style: italic; }
       .flag-card-answer { font-size: 12.5px; color: #9AA2AF; line-height: 1.5; }
       .flag-card .nav-btn { align-self: flex-start; margin-top: 4px; }
+      .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 24px; }
+      .stat-card { background: #1E2530; border: 1px solid #232A34; border-radius: 10px; padding: 14px; text-align: center; }
+      .stat-value { font-family: 'Space Grotesk', sans-serif; font-size: 22px; color: #E8A33D; }
+      .stat-label { font-size: 11px; color: #8B93A1; margin-top: 4px; }
+      .session-badge { font-weight: 600; }
+      .session-badge.complete { color: #6FBF8A; }
+      .session-badge.incomplete { color: #E8A33D; }
+      .session-transcript { margin-top: 8px; padding: 10px; background: #1A1F27; border-radius: 8px; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+      .session-transcript-line { font-size: 12px; color: #C7CCD4; line-height: 1.5; }
+      @media (max-width: 600px) {
+        .stats-row { grid-template-columns: repeat(2, 1fr); }
+      }
       .preview-actions-right { display: flex; gap: 10px; }
       .setup-label { font-size: 12px; font-weight: 600; color: #8B93A1; display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
       .setup-optional { font-weight: 400; color: #565E6B; text-transform: none; letter-spacing: 0; }

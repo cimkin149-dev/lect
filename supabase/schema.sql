@@ -80,3 +80,30 @@ create policy "owners can read flags for their own courses" on flagged_questions
 
 create policy "owners can resolve flags for their own courses" on flagged_questions
   for update using (course_id in (select id from courses where owner_id = auth.uid()));
+
+-- Added for Phase 2 (lecturer analytics/session history): one row per
+-- completed or abandoned lecture session, written once at the end by the
+-- (possibly anonymous) student's browser.
+create table if not exists sessions (
+  id text primary key,
+  course_id text not null references courses(id) on delete cascade,
+  module_id text not null references modules(id) on delete cascade,
+  student_name text,
+  completed boolean not null default false,
+  slides_reached int not null default 0,
+  total_slides int not null default 0,
+  question_count int not null default 0,
+  transcript jsonb,
+  summary text,
+  started_at timestamptz,
+  ended_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+alter table sessions enable row level security;
+
+create policy "anyone can record a session" on sessions
+  for insert with check (true);
+
+create policy "owners can read sessions for their own courses" on sessions
+  for select using (course_id in (select id from courses where owner_id = auth.uid()));
