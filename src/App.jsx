@@ -273,7 +273,7 @@ async function authRequest(path, body) {
   return data;
 }
 
-async function signUpLecturer(email, password) {
+async function signUpUser(email, password) {
   const data = await authRequest("/signup", { email, password });
   // If email confirmation is required, Supabase returns a user object with
   // no access_token yet — the account exists but can't sign in until
@@ -283,17 +283,17 @@ async function signUpLecturer(email, password) {
     : { session: null, needsConfirmation: true };
 }
 
-async function signInLecturer(email, password) {
+async function signInUser(email, password) {
   const data = await authRequest("/token?grant_type=password", { email, password });
   return toSession(data);
 }
 
-async function refreshLecturerSession(refreshToken) {
+async function refreshUserSession(refreshToken) {
   const data = await authRequest("/token?grant_type=refresh_token", { refresh_token: refreshToken });
   return toSession(data);
 }
 
-async function signOutLecturer(accessToken) {
+async function signOutUser(accessToken) {
   try {
     await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
       method: "POST",
@@ -316,18 +316,19 @@ function toSession(data) {
 // browser tab, not the Claude.ai artifact preview, where localStorage isn't
 // available) — wrapped defensively so it degrades to "just sign in again"
 // rather than crashing if storage is blocked or unavailable.
-const SESSION_STORAGE_KEY = "semai_lecturer_session";
-function saveSessionLocally(session) {
+const LECTURER_SESSION_STORAGE_KEY = "semai_lecturer_session";
+const STUDENT_SESSION_STORAGE_KEY = "semai_student_session";
+function saveSessionLocally(session, key = LECTURER_SESSION_STORAGE_KEY) {
   try {
-    if (session) localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    else localStorage.removeItem(SESSION_STORAGE_KEY);
+    if (session) localStorage.setItem(key, JSON.stringify(session));
+    else localStorage.removeItem(key);
   } catch (e) {
     /* storage unavailable — session just won't survive a refresh */
   }
 }
-function loadSessionLocally() {
+function loadSessionLocally(key = LECTURER_SESSION_STORAGE_KEY) {
   try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : null;
   } catch (e) {
     return null;
@@ -451,27 +452,32 @@ async function resolveFlaggedQuestion(flagId, accessToken) {
 // the student leaves early) — public insert, no login required, same
 // reasoning as flagging a question. Fire-and-forget; a failed write
 // shouldn't block anyone from leaving the room.
-async function recordSession(session) {
+async function recordSession(session, accessToken) {
   if (!supabaseEnabled() || !session.courseId || !session.moduleId) return;
   try {
-    await supabaseRequest("/sessions", {
-      method: "POST",
-      body: JSON.stringify([
-        {
-          id: makeId("session"),
-          course_id: session.courseId,
-          module_id: session.moduleId,
-          student_name: session.studentName || null,
-          completed: session.completed,
-          slides_reached: session.slidesReached,
-          total_slides: session.totalSlides,
-          question_count: session.questionCount,
-          transcript: session.transcript,
-          summary: session.summary || null,
-          started_at: session.startedAt,
-        },
-      ]),
-    });
+    await supabaseRequest(
+      "/sessions",
+      {
+        method: "POST",
+        body: JSON.stringify([
+          {
+            id: makeId("session"),
+            course_id: session.courseId,
+            module_id: session.moduleId,
+            student_id: session.studentId || null,
+            student_name: session.studentName || null,
+            completed: session.completed,
+            slides_reached: session.slidesReached,
+            total_slides: session.totalSlides,
+            question_count: session.questionCount,
+            transcript: session.transcript,
+            summary: session.summary || null,
+            started_at: session.startedAt,
+          },
+        ]),
+      },
+      accessToken
+    );
   } catch (e) {
     console.error("Failed to record session:", e);
   }
@@ -479,6 +485,17 @@ async function recordSession(session) {
 
 async function fetchSessions(courseId, accessToken) {
   return supabaseRequest(`/sessions?course_id=eq.${encodeURIComponent(courseId)}&select=*&order=ended_at.desc`, {}, accessToken);
+}
+
+// A signed-in student's own session history — embeds the course's code/
+// title/institution via PostgREST's foreign-table syntax so the history
+// view doesn't need a second round trip per session to make sense of it.
+async function fetchMySessions(studentId, accessToken) {
+  return supabaseRequest(
+    `/sessions?student_id=eq.${encodeURIComponent(studentId)}&select=*,courses(code,title,institution)&order=ended_at.desc`,
+    {},
+    accessToken
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,7 +1216,7 @@ function RoleSelectScreen({ onSelectRole }) {
 // anything: without a real signed-in user, there's no identity for the
 // database to scope writes to.
 // ---------------------------------------------------------------------------
-function AuthScreen({ onAuthenticated, onBack }) {
+function AuthScreen({ onAuthenticated, onBack, role = "lecturer" }) {
   const [mode, setMode] = useState("signin"); // signin | signup
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1217,7 +1234,7 @@ function AuthScreen({ onAuthenticated, onBack }) {
     setBusy(true);
     try {
       if (mode === "signup") {
-        const result = await signUpLecturer(email.trim(), password);
+        const result = await signUpUser(email.trim(), password);
         if (result.needsConfirmation) {
           setConfirmNotice(true);
           setBusy(false);
@@ -1225,7 +1242,7 @@ function AuthScreen({ onAuthenticated, onBack }) {
         }
         onAuthenticated(result.session);
       } else {
-        const session = await signInLecturer(email.trim(), password);
+        const session = await signInUser(email.trim(), password);
         onAuthenticated(session);
       }
     } catch (e) {
@@ -1237,10 +1254,16 @@ function AuthScreen({ onAuthenticated, onBack }) {
   return (
     <div className="join-screen">
       <div className="join-card">
-        <div className="join-eyebrow">SEMAI · Lecturer</div>
+        <div className="join-eyebrow">SEMAI · {role === "lecturer" ? "Lecturer" : "Student"}</div>
         <h1 className="join-title">{mode === "signup" ? "Create your account" : "Sign in"}</h1>
         <p className="join-sub">
-          {mode === "signup" ? "So your courses are uniquely yours, not editable by anyone else." : "Sign in to see and manage your courses."}
+          {role === "lecturer"
+            ? mode === "signup"
+              ? "So your courses are uniquely yours, not editable by anyone else."
+              : "Sign in to see and manage your courses."
+            : mode === "signup"
+            ? "So your learning history follows you across sessions."
+            : "Sign in to see your session history."}
         </p>
 
         {confirmNotice ? (
@@ -1589,10 +1612,10 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
 // Students pick a course, then a module within it, then give their name.
 // Only courses with at least one saved module show up — a course with zero
 // modules is still "being built" and isn't joinable yet.
-function JoinScreen({ courses, onJoin, onBack }) {
+function JoinScreen({ courses, onJoin, onBack, studentSession, onStudentSignIn, onStudentSignOut, onViewMyHistory }) {
   const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [selectedModuleId, setSelectedModuleId] = useState(null);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(studentSession ? studentSession.user.email.split("@")[0] : "");
 
   const joinable = courses.filter((c) => c.modules.length > 0);
 
@@ -1659,6 +1682,14 @@ function JoinScreen({ courses, onJoin, onBack }) {
         <div className="join-eyebrow">{course.code} · Live Session</div>
         <h1 className="join-title">{course.title}</h1>
         <p className="join-sub">{module_.unit}</p>
+
+        {studentSession ? (
+          <div className="signed-in-badge">
+            Signed in as {studentSession.user.email}
+            <button className="skip-link inline" onClick={onStudentSignOut}>Not you?</button>
+          </div>
+        ) : null}
+
         <input
           className="join-input"
           placeholder="Your name"
@@ -1670,6 +1701,13 @@ function JoinScreen({ courses, onJoin, onBack }) {
           Join lecture
         </button>
         <div className="join-hint">Mic + speaker recommended. The lecturer speaks aloud and you can interrupt anytime.</div>
+
+        {studentSession ? (
+          <button className="skip-link" onClick={onViewMyHistory}>View my learning history</button>
+        ) : (
+          <button className="skip-link" onClick={onStudentSignIn}>Sign in for a persistent history across sessions</button>
+        )}
+
         <button
           className="skip-link"
           onClick={() => (course.modules.length > 1 ? setSelectedModuleId(null) : joinable.length > 1 ? setSelectedCourseId(null) : onBack())}
@@ -1677,6 +1715,69 @@ function JoinScreen({ courses, onJoin, onBack }) {
           ← {course.modules.length > 1 ? "Choose a different module" : joinable.length > 1 ? "Choose a different course" : "Back to role select"}
         </button>
       </div>
+    </div>
+  );
+}
+
+// A signed-in student's own session history — same underlying data as the
+// lecturer's session view, scoped to "sessions I attended" instead of
+// "sessions for a course I own."
+function MyHistoryScreen({ session, onBack }) {
+  const [sessions, setSessions] = useState(null);
+  const [error, setError] = useState("");
+  const [expandedId, setExpandedId] = useState(null);
+
+  useEffect(() => {
+    fetchMySessions(session.user.id, session.accessToken)
+      .then(setSessions)
+      .catch((e) => {
+        setError(e.message || "Couldn't load your history.");
+        setSessions([]);
+      });
+  }, [session]);
+
+  return (
+    <div className="setup-screen">
+      <div className="setup-header">
+        <div className="join-eyebrow">SEMAI · {session.user.email}</div>
+        <h1 className="join-title">My learning history</h1>
+        <p className="join-sub">Every lecture you've attended, across every course.</p>
+        <button className="skip-link" onClick={onBack}>← Back</button>
+      </div>
+
+      {error && <div className="setup-error"><AlertTriangle size={13} /> {error}</div>}
+
+      {sessions === null ? (
+        <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div>
+      ) : sessions.length === 0 ? (
+        <div className="empty-hint">Nothing here yet — this fills in once you attend a lecture signed in.</div>
+      ) : (
+        <div className="flag-list">
+          {sessions.map((s) => (
+            <div className="flag-card" key={s.id}>
+              <div className="flag-card-meta">
+                {s.courses ? `${s.courses.code} — ${s.courses.title}` : "Unknown course"} · {new Date(s.ended_at).toLocaleString()} ·{" "}
+                <span className={s.completed ? "session-badge complete" : "session-badge incomplete"}>
+                  {s.completed ? "Completed" : `Left early (${s.slides_reached}/${s.total_slides} slides)`}
+                </span>
+              </div>
+              {s.summary && <div className="flag-card-answer">{s.summary}</div>}
+              <button className="nav-btn" onClick={() => setExpandedId((id) => (id === s.id ? null : s.id))}>
+                {expandedId === s.id ? "Hide transcript" : "View transcript"}
+              </button>
+              {expandedId === s.id && (
+                <div className="session-transcript">
+                  {(s.transcript || []).map((m, i) => (
+                    <div key={i} className="session-transcript-line">
+                      <strong>{m.speaker === "lecturer" ? "Lecturer" : m.speaker}:</strong> {m.text}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1899,7 +2000,7 @@ function CourseInsightsScreen({ course, session, onBack }) {
 // ---------------------------------------------------------------------------
 // Main meeting room
 // ---------------------------------------------------------------------------
-function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, role, onLeave, onEditSession }) {
+function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, role, onLeave, onEditSession }) {
   const [slideIndex, setSlideIndex] = useState(0);
   const [viewMode, setViewMode] = useState("slides"); // 'slides' | 'ide'
   const [chatOpen, setChatOpen] = useState(true);
@@ -2314,20 +2415,24 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, ro
       const questionCount = currentMessages.filter((m) => m.type === "question").length;
       const slidesReached = completed ? curriculum.slides.length : slideIndexRef.current + 1;
       const summary = await generateSessionSummary(curriculum, currentMessages);
-      await recordSession({
-        courseId,
-        moduleId,
-        studentName,
-        completed,
-        slidesReached,
-        totalSlides: curriculum.slides.length,
-        questionCount,
-        transcript: currentMessages.map(({ speaker, text, type }) => ({ speaker, text, type })),
-        summary,
-        startedAt: sessionStartedAtRef.current,
-      });
+      await recordSession(
+        {
+          courseId,
+          moduleId,
+          studentId: studentSession ? studentSession.user.id : null,
+          studentName,
+          completed,
+          slidesReached,
+          totalSlides: curriculum.slides.length,
+          questionCount,
+          transcript: currentMessages.map(({ speaker, text, type }) => ({ speaker, text, type })),
+          summary,
+          startedAt: sessionStartedAtRef.current,
+        },
+        studentSession ? studentSession.accessToken : undefined
+      );
     },
-    [role, courseId, moduleId, curriculum, studentName]
+    [role, courseId, moduleId, curriculum, studentName, studentSession]
   );
 
   useEffect(() => {
@@ -2760,7 +2865,7 @@ ${NATURAL_SPEECH_STYLE}`;
 // navigating back and forth (e.g. lecturer editing session mid-demo).
 // ---------------------------------------------------------------------------
 export default function SEMAIApp() {
-  const [stage, setStage] = useState("role"); // role | auth | dashboard | flags | courseMeta | moduleSetup | join | room
+  const [stage, setStage] = useState("role"); // role | auth | studentAuth | dashboard | flags | myHistory | courseMeta | moduleSetup | join | room
   const [role, setRole] = useState(null);
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
@@ -2771,6 +2876,7 @@ export default function SEMAIApp() {
   const [studentName, setStudentName] = useState("Student");
   const [dbStatus, setDbStatus] = useState(supabaseEnabled() ? "loading" : "local"); // loading | connected | error | local
   const [session, setSession] = useState(null); // { accessToken, refreshToken, user: {id, email} } | null
+  const [studentSession, setStudentSession] = useState(null); // same shape, separate identity/storage — a student account isn't a lecturer account
 
   // Try to restore a lecturer session on load (refreshing it, since access
   // tokens expire after ~1hr but refresh tokens last much longer). Silently
@@ -2779,12 +2885,25 @@ export default function SEMAIApp() {
     if (!supabaseEnabled()) return;
     const stored = loadSessionLocally();
     if (!stored) return;
-    refreshLecturerSession(stored.refreshToken)
+    refreshUserSession(stored.refreshToken)
       .then((fresh) => {
         setSession(fresh);
         saveSessionLocally(fresh);
       })
       .catch(() => saveSessionLocally(null)); // stored session is stale/invalid — just drop it
+  }, []);
+
+  // Same idea, independently, for a student account.
+  useEffect(() => {
+    if (!supabaseEnabled()) return;
+    const stored = loadSessionLocally(STUDENT_SESSION_STORAGE_KEY);
+    if (!stored) return;
+    refreshUserSession(stored.refreshToken)
+      .then((fresh) => {
+        setStudentSession(fresh);
+        saveSessionLocally(fresh, STUDENT_SESSION_STORAGE_KEY);
+      })
+      .catch(() => saveSessionLocally(null, STUDENT_SESSION_STORAGE_KEY));
   }, []);
 
   // Load once on mount. If Supabase isn't configured (blank URL/key) or the
@@ -2833,10 +2952,22 @@ export default function SEMAIApp() {
   };
 
   const handleSignOut = () => {
-    if (session) signOutLecturer(session.accessToken);
+    if (session) signOutUser(session.accessToken);
     setSession(null);
     saveSessionLocally(null);
     setStage("role");
+  };
+
+  const handleStudentAuthenticated = (newSession) => {
+    setStudentSession(newSession);
+    saveSessionLocally(newSession, STUDENT_SESSION_STORAGE_KEY);
+    setStage("join");
+  };
+
+  const handleStudentSignOut = () => {
+    if (studentSession) signOutUser(studentSession.accessToken);
+    setStudentSession(null);
+    saveSessionLocally(null, STUDENT_SESSION_STORAGE_KEY);
   };
 
   const handleNewCourse = () => {
@@ -2976,7 +3107,23 @@ export default function SEMAIApp() {
           onCancel={() => setStage("dashboard")}
         />
       )}
-      {stage === "join" && <JoinScreen courses={courses} onJoin={handleJoin} onBack={() => setStage("role")} />}
+      {stage === "join" && (
+        <JoinScreen
+          courses={courses}
+          onJoin={handleJoin}
+          onBack={() => setStage("role")}
+          studentSession={studentSession}
+          onStudentSignIn={() => setStage("studentAuth")}
+          onStudentSignOut={handleStudentSignOut}
+          onViewMyHistory={() => setStage("myHistory")}
+        />
+      )}
+      {stage === "studentAuth" && (
+        <AuthScreen role="student" onAuthenticated={handleStudentAuthenticated} onBack={() => setStage("join")} />
+      )}
+      {stage === "myHistory" && studentSession && (
+        <MyHistoryScreen session={studentSession} onBack={() => setStage("join")} />
+      )}
       {stage === "room" && roomData && (
         <LectureRoom
           curriculum={roomData.curriculum}
@@ -2984,6 +3131,7 @@ export default function SEMAIApp() {
           courseId={roomData.courseId}
           moduleId={roomData.moduleId}
           studentName={studentName}
+          studentSession={role === "student" ? studentSession : null}
           role={role}
           onLeave={handleLeaveRoom}
           onEditSession={role === "lecturer" ? () => setStage("dashboard") : null}
@@ -3085,6 +3233,8 @@ function GlobalStyles() {
       .budget-readout { font-size: 11px; color: #E8A33D; background: rgba(232,163,61,0.1); border: 1px solid rgba(232,163,61,0.25); border-radius: 8px; padding: 8px 10px; margin-top: 12px; }
       .setup-error { display: flex; align-items: center; gap: 6px; color: #F0A0A0; font-size: 12px; margin-top: 10px; }
       .skip-link { background: none; border: none; color: #565E6B; font-size: 12px; text-decoration: underline; cursor: pointer; margin-top: 10px; padding: 4px; }
+      .skip-link.inline { margin: 0 0 0 8px; padding: 0; display: inline; }
+      .signed-in-badge { font-size: 12px; color: #6FBF8A; background: rgba(111,191,138,0.1); border: 1px solid rgba(111,191,138,0.25); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; text-align: left; }
 
       .preview-wrap { display: flex; flex-direction: column; gap: 14px; }
       .preview-toolbar { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #C7CCD4; flex-wrap: wrap; gap: 8px; }

@@ -107,3 +107,19 @@ create policy "anyone can record a session" on sessions
 
 create policy "owners can read sessions for their own courses" on sessions
   for select using (course_id in (select id from courses where owner_id = auth.uid()));
+
+-- Added for Phase 3 (student identity): links a session to a real signed-in
+-- account instead of just a free-typed name. Anonymous guest sessions
+-- remain fully supported (student_id stays null).
+alter table sessions add column if not exists student_id uuid references auth.users(id);
+
+drop policy if exists "anyone can record a session" on sessions;
+create policy "record own session or anonymous session" on sessions
+  for insert with check (student_id is null or student_id = auth.uid());
+
+drop policy if exists "owners can read sessions for their own courses" on sessions;
+create policy "read own sessions or sessions for owned courses" on sessions
+  for select using (
+    student_id = auth.uid()
+    or course_id in (select id from courses where owner_id = auth.uid())
+  );
