@@ -1272,11 +1272,12 @@ function AuthScreen({ onAuthenticated, onBack, role = "lecturer" }) {
           </div>
         ) : (
           <>
-            <input className="join-input" type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input className="join-input" type="email" placeholder="Email" aria-label="Email address" value={email} onChange={(e) => setEmail(e.target.value)} />
             <input
               className="join-input"
               type="password"
               placeholder="Password"
+              aria-label="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submit()}
@@ -1318,25 +1319,25 @@ function CourseMetaScreen({ draft, editing, onChange, onContinue, onCancel }) {
       </div>
 
       <div className="setup-col narrow">
-        <input className="setup-input" placeholder="Course code, e.g. TDIT 214" value={draft.code} onChange={(e) => onChange({ code: e.target.value })} />
-        <input className="setup-input" placeholder="Course title" value={draft.title} onChange={(e) => onChange({ title: e.target.value })} />
-        <input className="setup-input" placeholder="Institution (optional)" value={draft.institution} onChange={(e) => onChange({ institution: e.target.value })} />
+        <input className="setup-input" placeholder="Course code, e.g. TDIT 214" aria-label="Course code" value={draft.code} onChange={(e) => onChange({ code: e.target.value })} />
+        <input className="setup-input" placeholder="Course title" aria-label="Course title" value={draft.title} onChange={(e) => onChange({ title: e.target.value })} />
+        <input className="setup-input" placeholder="Institution (optional)" aria-label="Institution" value={draft.institution} onChange={(e) => onChange({ institution: e.target.value })} />
 
-        <div className="setup-label" style={{ marginTop: 14 }}>Tone</div>
-        <div className="pill-row">
+        <div className="setup-label" style={{ marginTop: 14 }} id="tone-label">Tone</div>
+        <div className="pill-row" role="group" aria-labelledby="tone-label">
           {TONE_OPTIONS.map((t) => (
-            <button key={t.id} className={`pill ${draft.tone === t.id ? "active" : ""}`} onClick={() => onChange({ tone: t.id })} title={t.desc}>
+            <button key={t.id} className={`pill ${draft.tone === t.id ? "active" : ""}`} onClick={() => onChange({ tone: t.id })} title={t.desc} aria-pressed={draft.tone === t.id}>
               {t.label}
             </button>
           ))}
         </div>
 
-        <div className="setup-label" style={{ marginTop: 18 }}>Lecturer voice</div>
-        <div className="pill-row">
-          <button className={`pill ${draft.voiceProvider === "browser" ? "active" : ""}`} onClick={() => onChange({ voiceProvider: "browser" })}>
+        <div className="setup-label" style={{ marginTop: 18 }} id="voice-label">Lecturer voice</div>
+        <div className="pill-row" role="group" aria-labelledby="voice-label">
+          <button className={`pill ${draft.voiceProvider === "browser" ? "active" : ""}`} onClick={() => onChange({ voiceProvider: "browser" })} aria-pressed={draft.voiceProvider === "browser"}>
             Browser (free, robotic)
           </button>
-          <button className={`pill ${draft.voiceProvider === "elevenlabs" ? "active" : ""}`} onClick={() => onChange({ voiceProvider: "elevenlabs" })}>
+          <button className={`pill ${draft.voiceProvider === "elevenlabs" ? "active" : ""}`} onClick={() => onChange({ voiceProvider: "elevenlabs" })} aria-pressed={draft.voiceProvider === "elevenlabs"}>
             ElevenLabs (natural)
           </button>
         </div>
@@ -1347,12 +1348,14 @@ function CourseMetaScreen({ draft, editing, onChange, onContinue, onCancel }) {
               style={{ marginTop: 8 }}
               type="password"
               placeholder="ElevenLabs API key"
+              aria-label="ElevenLabs API key"
               value={draft.elevenLabsApiKey}
               onChange={(e) => onChange({ elevenLabsApiKey: e.target.value })}
             />
             <input
               className="setup-input"
               placeholder="Voice ID (optional — leave blank for default)"
+              aria-label="ElevenLabs voice ID"
               value={draft.elevenLabsVoiceId}
               onChange={(e) => onChange({ elevenLabsVoiceId: e.target.value })}
             />
@@ -1451,6 +1454,9 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
             <div className="setup-label">Source material</div>
             <div
               className="dropzone"
+              role="button"
+              tabIndex={0}
+              aria-label="Upload a file: .pptx, .pdf, .txt, or .md"
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
@@ -1458,6 +1464,12 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                 if (file) handleFile(file);
               }}
               onClick={() => fileInputRef.current && fileInputRef.current.click()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  fileInputRef.current && fileInputRef.current.click();
+                }
+              }}
             >
               {phase === "extracting" ? (
                 <>
@@ -1485,6 +1497,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
             <textarea
               className="setup-textarea"
               placeholder="Paste your slide bullets, speaker notes, or a course outline here…"
+              aria-label="Source material to build the module from"
               value={rawText}
               onChange={(e) => patchSetup({ rawText: e.target.value, fileName: "" })}
               rows={12}
@@ -1492,21 +1505,22 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
           </div>
 
           <div className="setup-col">
-            <div className="setup-label">Module details <span className="setup-optional">(topic inferred if left blank)</span></div>
-            <input className="setup-input" placeholder="This module's topic" value={moduleSettings.unitTitle} onChange={(e) => updateModuleSettings({ unitTitle: e.target.value })} />
+            <div className="setup-label" id="module-topic-label">Module details <span className="setup-optional">(topic inferred if left blank)</span></div>
+            <input className="setup-input" placeholder="This module's topic" aria-label="Module topic" value={moduleSettings.unitTitle} onChange={(e) => updateModuleSettings({ unitTitle: e.target.value })} />
 
-            <div className="setup-label" style={{ marginTop: 18 }}><Clock size={13} /> Lecture length: {moduleSettings.durationMinutes} min</div>
+            <div className="setup-label" style={{ marginTop: 18 }} id="duration-label"><Clock size={13} /> Lecture length: {moduleSettings.durationMinutes} min</div>
             <input
               type="range" min={10} max={120} step={5}
               value={moduleSettings.durationMinutes}
               onChange={(e) => updateModuleSettings({ durationMinutes: Number(e.target.value) })}
               className="setup-slider"
+              aria-labelledby="duration-label"
             />
 
-            <div className="setup-label" style={{ marginTop: 14 }}>Pacing</div>
-            <div className="pill-row">
+            <div className="setup-label" style={{ marginTop: 14 }} id="pace-label">Pacing</div>
+            <div className="pill-row" role="group" aria-labelledby="pace-label">
               {PACE_OPTIONS.map((p) => (
-                <button key={p.id} className={`pill ${moduleSettings.pace === p.id ? "active" : ""}`} onClick={() => updateModuleSettings({ pace: p.id })} title={p.hint}>
+                <button key={p.id} className={`pill ${moduleSettings.pace === p.id ? "active" : ""}`} onClick={() => updateModuleSettings({ pace: p.id })} title={p.hint} aria-pressed={moduleSettings.pace === p.id}>
                   {p.label}
                 </button>
               ))}
@@ -1546,8 +1560,8 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
             {draft.slides.map((s, i) => (
               <div className="slide-card" key={i}>
                 <div className="slide-card-head">
-                  <input className="slide-card-title" value={s.title} onChange={(e) => editSlide(i, { title: e.target.value })} />
-                  <button className="icon-btn" onClick={() => removeSlide(i)} title="Remove slide"><Trash2 size={14} /></button>
+                  <input className="slide-card-title" aria-label={`Slide ${i + 1} title`} value={s.title} onChange={(e) => editSlide(i, { title: e.target.value })} />
+                  <button className="icon-btn" onClick={() => removeSlide(i)} title="Remove slide" aria-label={`Remove slide: ${s.title}`}><Trash2 size={14} /></button>
                 </div>
                 <textarea
                   className="slide-card-bullets"
@@ -1555,6 +1569,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                   value={s.bullets.join("\n")}
                   onChange={(e) => editSlide(i, { bullets: e.target.value.split("\n") })}
                   placeholder="One bullet per line…"
+                  aria-label={`Slide ${i + 1} bullets, one per line`}
                 />
                 <textarea
                   className="slide-card-notes"
@@ -1562,6 +1577,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                   value={s.detail || ""}
                   onChange={(e) => editSlide(i, { detail: e.target.value })}
                   placeholder="On-screen supporting paragraph shown below the bullets…"
+                  aria-label={`Slide ${i + 1} on-screen supporting paragraph`}
                 />
                 <textarea
                   className="slide-card-notes"
@@ -1569,6 +1585,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                   value={s.notes}
                   onChange={(e) => editSlide(i, { notes: e.target.value })}
                   placeholder="Narration guidance for the AI lecturer…"
+                  aria-label={`Slide ${i + 1} narration guidance for the AI lecturer`}
                 />
                 <label className="setup-checkbox">
                   <input
@@ -1579,7 +1596,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                   Live code demo on this slide
                 </label>
                 {s.hasCode && (
-                  <textarea className="slide-card-code" rows={5} value={s.code || ""} onChange={(e) => editSlide(i, { code: e.target.value })} />
+                  <textarea className="slide-card-code" aria-label={`Code example for slide: ${s.title}`} rows={5} value={s.code || ""} onChange={(e) => editSlide(i, { code: e.target.value })} />
                 )}
               </div>
             ))}
@@ -1693,6 +1710,7 @@ function JoinScreen({ courses, onJoin, onBack, studentSession, onStudentSignIn, 
         <input
           className="join-input"
           placeholder="Your name"
+          aria-label="Your name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && name.trim() && onJoin(course, module_, name)}
@@ -1823,10 +1841,10 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
                 {course.institution && <span className="setup-optional"> · {course.institution}</span>}
               </div>
               <div style={{ display: "flex", gap: 6 }}>
-                <button className="icon-btn" onClick={() => onViewInsights(course)} title="Course insights — sessions & flagged questions">
+                <button className="icon-btn" onClick={() => onViewInsights(course)} title="Course insights — sessions & flagged questions" aria-label={`View insights for ${course.code}`}>
                   <Flag size={14} />
                 </button>
-                <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details">
+                <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details" aria-label={`Edit ${course.code} details`}>
                   <Settings2 size={14} />
                 </button>
               </div>
@@ -2674,10 +2692,10 @@ ${NATURAL_SPEECH_STYLE}`;
           >
             <Volume2 size={13} /> {audioBlocked ? "Tap to enable sound" : "Replay voice"}
           </button>
-          <button className={`topbar-edit ${autopilotOn ? "on" : ""}`} onClick={toggleAutopilot} title="Toggle automatic lecture">
+          <button className={`topbar-edit ${autopilotOn ? "on" : ""}`} onClick={toggleAutopilot} title="Toggle automatic lecture" aria-pressed={autopilotOn}>
             {autopilotOn ? <Volume2 size={13} /> : <VideoOff size={13} />} {autopilotOn ? "Auto-lecture on" : "Auto-lecture off"}
           </button>
-          <button className={`topbar-edit ${presentationMode ? "on" : ""}`} onClick={togglePresentationMode} title="Toggle presentation mode (bigger slide view)">
+          <button className={`topbar-edit ${presentationMode ? "on" : ""}`} onClick={togglePresentationMode} title="Toggle presentation mode (bigger slide view)" aria-pressed={presentationMode}>
             {presentationMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />} {presentationMode ? "Exit presentation" : "Presentation mode"}
           </button>
           {role === "lecturer" && onEditSession && (
@@ -2765,7 +2783,7 @@ ${NATURAL_SPEECH_STYLE}`;
                 Continue typing code
               </button>
             ) : (
-              <div className="status-pill">{statusLabel()}</div>
+              <div className="status-pill" aria-live="polite">{statusLabel()}</div>
             )}
             <button className="nav-btn" disabled={slideIndex === curriculum.slides.length - 1} onClick={() => changeSlide(1)}>
               Next <ChevronRight size={16} />
@@ -2793,7 +2811,7 @@ ${NATURAL_SPEECH_STYLE}`;
         {chatOpen && (
           <div className="side-panel">
             <div className="side-header">Chat & questions</div>
-            <div className="side-messages">
+            <div className="side-messages" aria-live="polite" aria-relevant="additions" role="log">
               {messages.length === 0 && <div className="empty-hint">Your lecturer will greet you in a moment…</div>}
               {messages.map((m) => (
                 <div key={m.id} className={`msg msg-${m.type}`}>
@@ -2814,6 +2832,7 @@ ${NATURAL_SPEECH_STYLE}`;
               )}
               <div className="side-input">
                 <input
+                  aria-label="Type your question"
                   placeholder={
                     !voiceSupported
                       ? "Voice not supported here — type your question…"
@@ -2825,7 +2844,7 @@ ${NATURAL_SPEECH_STYLE}`;
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendChat()}
                 />
-                <button onClick={sendChat} disabled={!chatInput.trim()}>
+                <button onClick={sendChat} disabled={!chatInput.trim()} aria-label="Send question">
                   <Send size={14} />
                 </button>
               </div>
@@ -2835,20 +2854,22 @@ ${NATURAL_SPEECH_STYLE}`;
       </div>
 
       <div className="controlbar">
-        <button className={`ctrl ${micOn ? "on" : ""}`} onClick={() => setMicOn((v) => !v)} title="Mic">
+        <button className={`ctrl ${micOn ? "on" : ""}`} onClick={() => setMicOn((v) => !v)} title="Mic" aria-label={micOn ? "Mute microphone" : "Unmute microphone"} aria-pressed={micOn}>
           {micOn ? <Mic size={18} /> : <MicOff size={18} />}
         </button>
-        <button className={`ctrl ${camOn ? "on" : ""}`} onClick={() => setCamOn((v) => !v)} title="Camera">
+        <button className={`ctrl ${camOn ? "on" : ""}`} onClick={() => setCamOn((v) => !v)} title="Camera" aria-label={camOn ? "Turn camera off" : "Turn camera on"} aria-pressed={camOn}>
           {camOn ? <Video size={18} /> : <VideoOff size={18} />}
         </button>
         <button
           className={`ctrl ${handRaised ? "raised" : ""} ${isListening ? "listening" : ""}`}
           onClick={toggleHandRaise}
           title="Raise hand to ask by voice"
+          aria-label={handRaised ? "Lower hand" : "Raise hand to ask a question"}
+          aria-pressed={handRaised}
         >
           <Hand size={18} />
         </button>
-        <button className={`ctrl ${chatOpen ? "on" : ""}`} onClick={() => setChatOpen((v) => !v)} title="Chat">
+        <button className={`ctrl ${chatOpen ? "on" : ""}`} onClick={() => setChatOpen((v) => !v)} title="Chat" aria-label={chatOpen ? "Close chat panel" : "Open chat panel"} aria-pressed={chatOpen}>
           <MessageSquare size={18} />
         </button>
         <button className="ctrl leave labeled" onClick={handleLeaveClick} title="Leave the meeting">
@@ -3052,6 +3073,7 @@ export default function SEMAIApp() {
   return (
     <>
       <GlobalStyles />
+      <main>
       {stage === "role" && (
         <RoleSelectScreen
           onSelectRole={(r) => {
@@ -3137,6 +3159,7 @@ export default function SEMAIApp() {
           onEditSession={role === "lecturer" ? () => setStage("dashboard") : null}
         />
       )}
+      </main>
     </>
   );
 }
@@ -3145,7 +3168,7 @@ export default function SEMAIApp() {
 // ---------------------------------------------------------------------------
 // Styling — token system:
 // bg #14181C, panel #1E2530, chalkboard #2F6F4F, live-amber #E8A33D,
-// code-blue #4C7EF3, text #EDEFF2 / #8B93A1
+// code-blue #6B95FF, text #EDEFF2 / #8B93A1
 // ---------------------------------------------------------------------------
 function GlobalStyles() {
   return (
@@ -3168,11 +3191,11 @@ function GlobalStyles() {
       .join-input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid #2A313C; background: #1E2530; color: #EDEFF2; font-size: 14px; margin-bottom: 12px; outline: none; }
       .join-input:focus { border-color: #E8A33D; }
       .join-btn { width: 100%; padding: 12px; border-radius: 10px; border: none; background: #2F6F4F; color: #EDEFF2; font-weight: 600; font-size: 14px; cursor: pointer; transition: background 0.15s; display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px; }
-      .join-btn:disabled { background: #2A313C; color: #565E6B; cursor: not-allowed; }
+      .join-btn:disabled { background: #2A313C; color: #8890A0; cursor: not-allowed; }
       .join-btn:not(:disabled):hover { background: #37855D; }
       .join-btn.secondary { background: #1E2530; border: 1px solid #2A313C; color: #C7CCD4; }
       .join-btn.secondary:hover { background: #232A34; }
-      .join-hint { color: #565E6B; font-size: 12px; margin-top: 16px; }
+      .join-hint { color: #8890A0; font-size: 12px; margin-top: 16px; }
 
       /* Setup screen */
       .setup-screen { min-height: 560px; max-width: 920px; margin: 0 auto; padding: 32px 20px 60px; }
@@ -3180,7 +3203,7 @@ function GlobalStyles() {
       .setup-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 28px; align-items: start; }
       .setup-col { display: flex; flex-direction: column; gap: 8px; }
       .setup-col.narrow { max-width: 420px; margin: 0 auto; }
-      .course-context-note { font-size: 11px; color: #565E6B; margin-top: 10px; line-height: 1.5; }
+      .course-context-note { font-size: 11px; color: #8890A0; margin-top: 10px; line-height: 1.5; }
 
       .db-status { font-size: 11px; padding: 7px 12px; border-radius: 8px; margin-bottom: 14px; display: inline-block; }
       .db-status.ok { color: #6FBF8A; background: rgba(111,191,138,0.1); border: 1px solid rgba(111,191,138,0.25); }
@@ -3193,13 +3216,13 @@ function GlobalStyles() {
       .module-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
       .module-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #1A1F27; border: 1px solid #232A34; border-radius: 9px; }
       .module-row-title { font-size: 13px; color: #EDEFF2; margin-bottom: 2px; }
-      .module-row-meta { font-size: 11px; color: #565E6B; }
+      .module-row-meta { font-size: 11px; color: #8890A0; }
       .flag-section { margin-bottom: 24px; }
       .flag-section-title { font-size: 12px; font-weight: 600; color: #8B93A1; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
       .flag-list { display: flex; flex-direction: column; gap: 10px; }
       .flag-card { background: #1E2530; border: 1px solid #232A34; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
       .flag-card.resolved { opacity: 0.55; }
-      .flag-card-meta { font-size: 11px; color: #565E6B; }
+      .flag-card-meta { font-size: 11px; color: #8890A0; }
       .flag-card-question { font-size: 14px; color: #EDEFF2; font-style: italic; }
       .flag-card-answer { font-size: 12.5px; color: #9AA2AF; line-height: 1.5; }
       .flag-card .nav-btn { align-self: flex-start; margin-top: 4px; }
@@ -3217,10 +3240,10 @@ function GlobalStyles() {
       }
       .preview-actions-right { display: flex; gap: 10px; }
       .setup-label { font-size: 12px; font-weight: 600; color: #8B93A1; display: flex; align-items: center; gap: 5px; margin-bottom: 2px; }
-      .setup-optional { font-weight: 400; color: #565E6B; text-transform: none; letter-spacing: 0; }
+      .setup-optional { font-weight: 400; color: #8890A0; text-transform: none; letter-spacing: 0; }
       .dropzone { border: 1.5px dashed #2A313C; border-radius: 12px; padding: 22px; text-align: center; color: #8B93A1; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; transition: border-color 0.15s, background 0.15s; }
       .dropzone:hover { border-color: #E8A33D; background: rgba(232,163,61,0.05); }
-      .setup-or { text-align: center; color: #565E6B; font-size: 11px; margin: 6px 0; }
+      .setup-or { text-align: center; color: #8890A0; font-size: 11px; margin: 6px 0; }
       .setup-textarea { width: 100%; min-height: 180px; padding: 12px; border-radius: 10px; border: 1px solid #2A313C; background: #1A1F27; color: #EDEFF2; font-size: 13px; font-family: 'JetBrains Mono', monospace; line-height: 1.6; resize: vertical; outline: none; }
       .setup-textarea:focus { border-color: #E8A33D; }
       .setup-input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2A313C; background: #1E2530; color: #EDEFF2; font-size: 13px; outline: none; margin-bottom: 4px; }
@@ -3232,7 +3255,7 @@ function GlobalStyles() {
       .setup-checkbox { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #C7CCD4; margin-top: 12px; cursor: pointer; }
       .budget-readout { font-size: 11px; color: #E8A33D; background: rgba(232,163,61,0.1); border: 1px solid rgba(232,163,61,0.25); border-radius: 8px; padding: 8px 10px; margin-top: 12px; }
       .setup-error { display: flex; align-items: center; gap: 6px; color: #F0A0A0; font-size: 12px; margin-top: 10px; }
-      .skip-link { background: none; border: none; color: #565E6B; font-size: 12px; text-decoration: underline; cursor: pointer; margin-top: 10px; padding: 4px; }
+      .skip-link { background: none; border: none; color: #8890A0; font-size: 12px; text-decoration: underline; cursor: pointer; margin-top: 10px; padding: 4px; }
       .skip-link.inline { margin: 0 0 0 8px; padding: 0; display: inline; }
       .signed-in-badge { font-size: 12px; color: #6FBF8A; background: rgba(111,191,138,0.1); border: 1px solid rgba(111,191,138,0.25); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; text-align: left; }
 
@@ -3242,7 +3265,7 @@ function GlobalStyles() {
       .slide-card { background: #1E2530; border: 1px solid #232A34; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
       .slide-card-head { display: flex; align-items: center; gap: 8px; }
       .slide-card-title { flex: 1; font-family: 'Space Grotesk', sans-serif; font-size: 15px; background: none; border: none; border-bottom: 1px solid #2A313C; color: #EDEFF2; padding: 4px 0; outline: none; }
-      .icon-btn { background: none; border: none; color: #565E6B; cursor: pointer; padding: 4px; }
+      .icon-btn { background: none; border: none; color: #8890A0; cursor: pointer; padding: 4px; }
       .icon-btn:hover { color: #F0A0A0; }
       .slide-card-bullets, .slide-card-notes, .slide-card-code { width: 100%; border-radius: 8px; border: 1px solid #2A313C; background: #1A1F27; color: #C7CCD4; font-size: 12.5px; padding: 8px 10px; outline: none; resize: vertical; }
       .slide-card-code { font-family: 'JetBrains Mono', monospace; }
@@ -3256,7 +3279,7 @@ function GlobalStyles() {
       .topbar-right { display: flex; align-items: center; gap: 12px; }
       .dot-live { width: 7px; height: 7px; border-radius: 50%; background: #E8A33D; box-shadow: 0 0 0 3px rgba(232,163,61,0.2); }
       .topbar-slide { color: #8B93A1; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-      .topbar-budget { display: flex; align-items: center; gap: 4px; color: #565E6B; font-size: 11px; }
+      .topbar-budget { display: flex; align-items: center; gap: 4px; color: #8890A0; font-size: 11px; }
       .topbar-edit { display: flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 7px; border: 1px solid #232A34; background: #1A1F27; color: #8B93A1; font-size: 11px; cursor: pointer; }
       .topbar-edit:hover { color: #EDEFF2; border-color: #37404D; }
       .topbar-edit.on { background: rgba(232,163,61,0.12); color: #E8A33D; border-color: rgba(232,163,61,0.35); }
@@ -3305,12 +3328,12 @@ function GlobalStyles() {
       .ide-bar { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8B93A1; margin-bottom: 10px; border-bottom: 1px solid #232A34; padding-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
       .live-tag { display: flex; align-items: center; gap: 5px; color: #E8A33D; font-size: 11px; }
       .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #E8A33D; animation: pulse 1s ease-in-out infinite; }
-      .ide-placeholder { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #565E6B; white-space: pre-wrap; font-style: italic; }
+      .ide-placeholder { font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #8890A0; white-space: pre-wrap; font-style: italic; }
       .ide-code { flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #C7CCD4; margin: 0; white-space: pre-wrap; }
       .type-cursor { color: #E8A33D; animation: pulse 0.8s step-end infinite; }
-      .tok-keyword { color: #4C7EF3; }
+      .tok-keyword { color: #6B95FF; }
       .tok-string { color: #E8A33D; }
-      .tok-comment { color: #565E6B; font-style: italic; }
+      .tok-comment { color: #8890A0; font-style: italic; }
 
       .stage-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
       .nav-btn { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-radius: 8px; border: 1px solid #232A34; background: #1A1F27; color: #C7CCD4; font-size: 12px; cursor: pointer; }
@@ -3327,10 +3350,10 @@ function GlobalStyles() {
       .side-panel { width: 260px; flex: 0 0 260px; border-left: 1px solid #232A34; display: flex; flex-direction: column; min-height: 0; }
       .side-header { flex: 0 0 auto; padding: 14px 16px; font-size: 12px; font-weight: 600; color: #8B93A1; border-bottom: 1px solid #232A34; }
       .side-messages { flex: 1 1 auto; overflow-y: auto; min-height: 0; padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
-      .empty-hint { color: #565E6B; font-size: 12px; }
-      .msg-speaker { font-size: 11px; color: #565E6B; margin-bottom: 3px; }
+      .empty-hint { color: #8890A0; font-size: 12px; }
+      .msg-speaker { font-size: 11px; color: #8890A0; margin-bottom: 3px; }
       .msg-text { font-size: 13px; line-height: 1.5; color: #C7CCD4; }
-      .msg-question .msg-speaker { color: #4C7EF3; }
+      .msg-question .msg-speaker { color: #6B95FF; }
       .msg-answer .msg-speaker, .msg-explain .msg-speaker { color: #E8A33D; }
       .msg-system { opacity: 0.8; }
       .msg-system .msg-speaker { color: #F0A0A0; }
@@ -3344,7 +3367,7 @@ function GlobalStyles() {
       .side-input { display: flex; gap: 6px; padding: 12px 16px; }
       .side-input input { flex: 1; padding: 9px 10px; border-radius: 8px; border: 1px solid #2A313C; background: #1A1F27; color: #EDEFF2; font-size: 12px; outline: none; }
       .side-input button { padding: 9px 10px; border-radius: 8px; border: none; background: #2F6F4F; color: #EDEFF2; cursor: pointer; }
-      .side-input button:disabled { background: #2A313C; color: #565E6B; }
+      .side-input button:disabled { background: #2A313C; color: #8890A0; }
 
       .controlbar { flex: 0 0 auto; display: flex; justify-content: center; gap: 10px; padding: 14px; border-top: 1px solid #232A34; }
       .ctrl { width: 40px; height: 40px; border-radius: 10px; border: 1px solid #232A34; background: #1A1F27; color: #8B93A1; display: flex; align-items: center; justify-content: center; cursor: pointer; }
@@ -3357,6 +3380,22 @@ function GlobalStyles() {
 
       @media (max-width: 720px) {
         .setup-grid { grid-template-columns: 1fr; }
+      }
+
+      /* Accessibility: a strong, consistent keyboard focus ring, applied
+         globally and placed last in the cascade so it overrides any
+         earlier outline:none on individual form elements (several had
+         no focus indicator at all before this). Uses :focus-visible
+         rather than :focus so it only shows for keyboard/assistive-tech
+         focus, not mouse clicks. */
+      *:focus-visible {
+        outline: 2px solid #E8A33D;
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
       }
     `}</style>
   );
