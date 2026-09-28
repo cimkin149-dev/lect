@@ -499,6 +499,54 @@ async function fetchMySessions(studentId, accessToken) {
 }
 
 // ---------------------------------------------------------------------------
+// Data controls — real deletion/export mechanisms, not just a privacy
+// policy promising them. Course/session deletion use the owner/student-
+// scoped RLS DELETE policies already in place; account deletion needs a
+// server-side Edge Function since removing an actual auth.users row
+// requires admin privileges no client-side key can safely hold.
+// ---------------------------------------------------------------------------
+async function deleteCourse(courseId, accessToken) {
+  await supabaseRequest(`/courses?id=eq.${encodeURIComponent(courseId)}`, { method: "DELETE" }, accessToken);
+}
+
+async function deleteSession(sessionId, accessToken) {
+  await supabaseRequest(`/sessions?id=eq.${encodeURIComponent(sessionId)}`, { method: "DELETE" }, accessToken);
+}
+
+async function deleteAllMySessions(studentId, accessToken) {
+  await supabaseRequest(`/sessions?student_id=eq.${encodeURIComponent(studentId)}`, { method: "DELETE" }, accessToken);
+}
+
+const DELETE_ACCOUNT_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/delete-account";
+
+async function deleteMyAccount(accessToken) {
+  const res = await fetch(DELETE_ACCOUNT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      ...(SUPABASE_ANON_KEY ? { apikey: SUPABASE_ANON_KEY } : {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || `Account deletion failed (${res.status})`);
+  }
+}
+
+function downloadJSON(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
 // AI backend — routes through the Supabase Edge Function proxy, which holds
 // the real Gemini API key server-side (see supabase/functions/gemini-proxy).
 // No direct-to-provider fallback here on purpose: an earlier version of this
@@ -1804,7 +1852,10 @@ function MyHistoryScreen({ session, onBack }) {
 // far, and the two things a lecturer actually needs from here — add
 // another module to a course, or preview one as a student would see it.
 // Saving a module always lands back here, never in a live session.
-function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewInsights }) {
+function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewInsights, onDeleteCourse, onDeleteAccount }) {
+  const [confirmDeleteCourseId, setConfirmDeleteCourseId] = useState(null);
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
+
   const statusLabel = {
     connected: { text: "Connected to Supabase — courses persist across refreshes", cls: "ok" },
     loading: { text: "Connecting to Supabase…", cls: "loading" },
@@ -1818,9 +1869,17 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
         <div className="join-eyebrow">Lecturer dashboard {lecturerEmail && <span className="setup-optional">· {lecturerEmail}</span>}</div>
         <h1 className="join-title">Your courses</h1>
         <p className="join-sub">Build a course module by module. Saving publishes it for students — it won't drop you into a live session.</p>
-        <div style={{ display: "flex", gap: 14 }}>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
           <button className="skip-link" onClick={onBack}>← Back to role select</button>
           {onSignOut && <button className="skip-link" onClick={onSignOut}>Sign out</button>}
+          {onDeleteAccount && (
+            <button
+              className="skip-link danger"
+              onClick={() => (confirmDeleteAccount ? onDeleteAccount() : setConfirmDeleteAccount(true))}
+            >
+              {confirmDeleteAccount ? "Click again to permanently delete your account" : "Delete my account"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1847,8 +1906,29 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
                 <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details" aria-label={`Edit ${course.code} details`}>
                   <Settings2 size={14} />
                 </button>
+                <button
+                  className="icon-btn danger"
+                  onClick={() => {
+                    if (confirmDeleteCourseId === course.id) {
+                      onDeleteCourse(course);
+                      setConfirmDeleteCourseId(null);
+                    } else {
+                      setConfirmDeleteCourseId(course.id);
+                    }
+                  }}
+                  title={confirmDeleteCourseId === course.id ? "Click again to permanently delete" : "Delete course"}
+                  aria-label={confirmDeleteCourseId === course.id ? `Confirm permanent deletion of ${course.code}` : `Delete ${course.code}`}
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             </div>
+
+            {confirmDeleteCourseId === course.id && (
+              <div className="danger-warning">
+                This permanently deletes {course.code} and every module, session, and flagged question in it. Click the trash icon again to confirm, or click elsewhere to cancel.
+              </div>
+            )}
 
             {course.modules.length === 0 ? (
               <div className="empty-hint">No modules yet — add the first one below.</div>

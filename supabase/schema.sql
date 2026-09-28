@@ -123,3 +123,20 @@ create policy "read own sessions or sessions for owned courses" on sessions
     student_id = auth.uid()
     or course_id in (select id from courses where owner_id = auth.uid())
   );
+
+-- Fix for right-to-erasure: sessions.student_id originally had no ON
+-- DELETE behavior specified (defaulted to NO ACTION), which would have
+-- blocked deleting any student account that had session history at all --
+-- the delete would fail outright with a foreign key violation. CASCADE
+-- means deleting a student's account also removes their session history,
+-- which is the correct behavior for "delete my account" to actually mean
+-- what it says.
+alter table sessions drop constraint if exists sessions_student_id_fkey;
+alter table sessions add constraint sessions_student_id_fkey
+  foreign key (student_id) references auth.users(id) on delete cascade;
+
+-- Added for Phase 5 (data controls / right to erasure): lets a student
+-- delete their own session history. Note: courses and modules already had
+-- owner-scoped DELETE policies from the Phase 3 auth migration.
+create policy "students can delete their own sessions" on sessions
+  for delete using (student_id = auth.uid());
