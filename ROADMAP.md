@@ -15,6 +15,15 @@
 
 v1.2.0 (8 Oct 2026): welcome/splash screen with build stamp; lecture-notes PDF now always reachable (top-bar "Notes (PDF)" button, covers the slides reached; completion banner is sticky). Proxy v6 raised rate limits so notes generation isn't throttled.
 
+v1.3.0 (8 Oct 2026): **Slide kit** (`src/slideKit/`). Eight slide types (concept, definition, comparison,
+worked example, code walkthrough, diagram, plot, summary); KaTeX maths; two-pass deck generation (outline, then one call
+per slide) with automatic checks: LaTeX must parse, worked-example arithmetic is recomputed with mathjs, Mermaid diagrams
+must parse, plots must compile — problems go back to the AI once, anything still broken is stripped before students see it.
+Worked examples reveal step by step while the lecturer speaks; code walkthroughs highlight the lines being explained;
+multi-language highlighter (Java, C, C++, Python, JS/TS, VB, SQL, HTML/CSS); in-browser Run for JavaScript only (Java/C/C++/VB
+need an execution service — not built; their expected output is AI-written and labelled as such). Notes PDF includes
+formulas, steps, tables, diagrams, graphs and numbered code. Run the tests with `npm test`.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

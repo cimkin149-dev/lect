@@ -22,6 +22,15 @@ export default defineConfig({
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __BUILD_SHA__: JSON.stringify(sha),
   },
+  build: {
+    chunkSizeWarningLimit: 1600,
+    rollupOptions: {
+      output: {
+        entryFileNames: "assets/app-[hash].js",
+        chunkFileNames: "assets/chunk-[name]-[hash].js",
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({
@@ -46,7 +55,19 @@ export default defineConfig({
         // need a live network connection regardless, so there's no
         // meaningful "offline lecture" mode — this just makes the app
         // itself load instantly and be installable.
-        globPatterns: ["**/*.{js,css,html,png,svg}"],
+        //
+        // Only the app shell is precached. The heavy lazy chunks (Mermaid's
+        // diagram engines, mathjs, jsPDF…) are named "chunk-*" and are cached
+        // the first time they're actually used, so installing the app stays
+        // light but diagrams/maths still work offline after first use.
+        globPatterns: ["index.html", "assets/app-*.js", "assets/*.css", "*.{png,svg,ico}"],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url, sameOrigin }) => sameOrigin && url.pathname.startsWith("/assets/"),
+            handler: "CacheFirst", // file names are content-hashed, so cache-first is safe
+            options: { cacheName: "semai-lazy-assets", expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 } },
+          },
+        ],
       },
     }),
   ],

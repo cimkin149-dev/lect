@@ -1,6 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { PrivacyPolicyScreen, TermsScreen, LegalLinks } from "./legal.jsx";
 import SplashScreen, { VersionTag } from "./SplashScreen.jsx";
+import SlideView from "./slideKit/SlideView.jsx";
+import CodePane from "./slideKit/CodePane.jsx";
+import { normalizeSlide, slideToPlainContext, TYPE_LABELS, LANGUAGE_LABELS } from "./slideKit/schema.js";
+import { generateDeck } from "./slideKit/generate.js";
+import { DEMO_SHOWCASE_SLIDES } from "./slideKit/demoSlides.js";
+import { validateSlide } from "./slideKit/validate.js";
+import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
@@ -71,6 +78,7 @@ const DEFAULT_CURRICULUM = {
     }
 }`,
     },
+    ...DEMO_SHOWCASE_SLIDES,
   ],
 };
 
@@ -113,7 +121,7 @@ function buildRoomData(course, module) {
   return {
     courseId: course.id,
     moduleId: module.id,
-    curriculum: { code: course.code, title: course.title, unit: module.unit, slides: module.slides },
+    curriculum: { code: course.code, title: course.title, unit: module.unit, slides: (module.slides || []).map((sl, i) => normalizeSlide(sl, i)) },
     settings: {
       courseCode: course.code,
       courseTitle: course.title,
@@ -635,18 +643,28 @@ async function generateLectureNotes(curriculum, onProgress, upToCount) {
 
 For the given topic, write a well-structured explanation covering, where relevant: a clear definition or framing of the concept, how it works or the underlying reasoning, a concrete worked example (invent a good one if none is given), and why it matters or a common mistake to avoid.
 
-Write 3-5 well-developed paragraphs of formal written prose. No markdown formatting, no bullet points, no headers — plain paragraphs, since this is typeset directly into a PDF as body text.`;
-    const prompt = slide.hasCode
-      ? `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}.${slide.detail ? ` On-screen supporting text: ${slide.detail}` : ""} Write the study-guide entry for this topic, and as part of it explain this code example in depth — what each part does and why: ${slide.code}`
-      : `Topic: "${slide.title}". On-screen points from the slide: ${slide.bullets.join("; ")}.${slide.detail ? ` On-screen supporting text: ${slide.detail}` : ""} Write the study-guide entry for this topic.`;
+Write 3-5 well-developed paragraphs of formal written prose. No markdown formatting, no bullet points, no headers — plain paragraphs, since this is typeset directly into a PDF as body text.
+
+Formulas, worked-example steps, tables, code and diagrams are typeset separately by the document right after your text, so refer to them naturally ("the worked example below") but do not reproduce them. Never use LaTeX or code symbols in your prose; write mathematics in words or plain notation such as x^2 or a/b.`;
+    const prompt = `Topic: "${slide.title}". Everything the student saw on this slide:\n${slideToPlainContext(slide)}\n\nWrite the study-guide entry for this topic.${slide.hasCode ? " As part of it, explain the code example in depth: what each part does and why." : ""}${slide.steps ? " Explain the method used in the worked example and the reasoning behind each step." : ""}`;
     let explanation;
     try {
-      explanation = await callAI(system, prompt, 1500, GEMINI_MODEL_STRONG);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          explanation = await callAI(system, prompt, 1500, GEMINI_MODEL_STRONG);
+          break;
+        } catch (e) {
+          // free-tier limits are per minute: wait and retry instead of losing this section
+          if (!e.rateLimited || attempt === 2) throw e;
+          onProgress && onProgress(`The AI is busy — retrying "${slide.title}" in a few seconds…`);
+          await new Promise((r) => setTimeout(r, attempt === 0 ? 5000 : 12000));
+        }
+      }
       if (!explanation) throw new Error("empty response");
     } catch (e) {
       explanation = "Detailed notes for this section couldn't be generated right now — please refer to the key points covered during the live session.";
     }
-    sections.push({ title: slide.title, explanation, code: slide.hasCode ? slide.code : null });
+    sections.push({ title: slide.title, explanation, code: slide.hasCode ? slide.code : null, slide });
   }
   return sections;
 }
@@ -669,113 +687,6 @@ async function generateSessionSummary(curriculum, messages) {
   }
 }
 
-function addPdfFooter(doc, pageNum) {
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  doc.setFontSize(8);
-  doc.setTextColor(140, 140, 140);
-  doc.text(`SEMAI — AI Lecturer  ·  Page ${pageNum}`, pageWidth / 2, pageHeight - 20, { align: "center" });
-}
-
-// Branded, paginated lecture-notes PDF. Validated against real multi-page,
-// multi-section, code-block content before being wired in here.
-async function buildLectureNotesPdf(curriculum, sections) {
-  // Dynamically imported so the ~250KB jsPDF + its optional HTML-rendering
-  // plugin only download at the moment someone actually generates a PDF —
-  // not as part of the app's initial load, which matters for a PWA meant
-  // to start up fast.
-  const { jsPDF } = await import("jspdf");
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 50;
-  const contentWidth = pageWidth - margin * 2;
-  let pageNum = 1;
-
-  doc.setFillColor(20, 24, 28);
-  doc.rect(0, 0, pageWidth, 90, "F");
-  doc.setTextColor(232, 163, 61);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(22);
-  doc.text("SEMAI", margin, 45);
-  doc.setTextColor(235, 239, 242);
-  doc.setFontSize(10);
-  doc.setFont("helvetica", "normal");
-  doc.text("AI-Led Lecture Notes", margin, 62);
-
-  const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-  doc.setFontSize(9);
-  doc.setTextColor(200, 204, 212);
-  doc.text(dateStr, pageWidth - margin, 45, { align: "right" });
-
-  let y = 125;
-  doc.setTextColor(20, 24, 28);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text(`${curriculum.code} — ${curriculum.title}`, margin, y);
-  y += 20;
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(12);
-  doc.setTextColor(90, 90, 90);
-  doc.text(curriculum.unit, margin, y);
-  y += 35;
-
-  addPdfFooter(doc, pageNum);
-
-  const ensureSpace = (needed) => {
-    if (y + needed > pageHeight - 50) {
-      doc.addPage();
-      pageNum++;
-      addPdfFooter(doc, pageNum);
-      y = 50;
-    }
-  };
-
-  sections.forEach((section, i) => {
-    ensureSpace(40);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
-    doc.setTextColor(47, 111, 79);
-    const titleLines = doc.splitTextToSize(`${i + 1}. ${section.title}`, contentWidth);
-    ensureSpace(titleLines.length * 16);
-    doc.text(titleLines, margin, y);
-    y += titleLines.length * 16 + 8;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    doc.setTextColor(30, 30, 30);
-    const bodyLines = doc.splitTextToSize(section.explanation, contentWidth);
-    bodyLines.forEach((line) => {
-      ensureSpace(16);
-      doc.text(line, margin, y);
-      y += 15;
-    });
-    y += 8;
-
-    if (section.code) {
-      const codeLines = section.code.split("\n");
-      const codeBlockHeight = codeLines.length * 12 + 16;
-      ensureSpace(codeBlockHeight + 10);
-      doc.setFillColor(245, 245, 245);
-      doc.rect(margin, y - 10, contentWidth, codeBlockHeight, "F");
-      doc.setFont("courier", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(40, 40, 40);
-      let codeY = y + 4;
-      codeLines.forEach((line) => {
-        doc.text(line, margin + 8, codeY);
-        codeY += 12;
-      });
-      y = codeY + 14;
-      doc.setFont("helvetica", "normal");
-    } else {
-      y += 14;
-    }
-  });
-
-  return doc;
-}
-
 async function downloadLectureNotesPdf(curriculum, sections) {
   const doc = await buildLectureNotesPdf(curriculum, sections);
   const safeName = `${curriculum.code}-${curriculum.unit}`.replace(/[^a-z0-9\-_. ]/gi, "").replace(/\s+/g, "_");
@@ -794,6 +705,25 @@ async function downloadLectureNotesPdf(curriculum, sections) {
 // new capitalized word), at the minor cost of occasionally under-splitting
 // a sentence that starts with a lowercase word. Good enough for
 // interruption/TTS chunking; not meant to be grammatically perfect.
+// Slides that carry their own scripted delivery (worked examples and code
+// walkthroughs) are taught unit by unit: each spoken unit reveals a step or
+// highlights code lines. Returns null for ordinary slides.
+function buildStructuredUnits(s) {
+  if (s.type === "worked_example" && s.steps && s.steps.length) {
+    const units = [{ say: s.problemSay || "Let's work through this problem step by step.", reveal: 0 }];
+    s.steps.forEach((st, i) => units.push({ say: st.say || st.label || `Step ${i + 1}.`, reveal: i + 1 }));
+    if (s.finalAnswer) units.push({ say: s.finalSay || "And that gives us our answer.", reveal: s.steps.length + 1 });
+    return units;
+  }
+  if (s.hasCode && s.codeSteps && s.codeSteps.length) {
+    const units = [];
+    if (s.introSay) units.push({ say: s.introSay, lines: null });
+    s.codeSteps.forEach((c) => units.push({ say: c.say, lines: c.lines }));
+    return units;
+  }
+  return null;
+}
+
 function splitIntoSentences(text) {
   const trimmed = (text || "").trim();
   if (!trimmed) return [text || ""];
@@ -1235,7 +1165,30 @@ function parseCurriculumJSON(raw) {
   };
 }
 
-async function generateCurriculum(rawUnits, settings) {
+async function generateCurriculum(rawUnits, settings, onProgress) {
+  const tone = TONE_OPTIONS.find((t) => t.id === settings.tone) || TONE_OPTIONS[0];
+  try {
+    const deck = await generateDeck({
+      rawUnits,
+      settings,
+      toneDesc: tone.desc,
+      allowLiveCode: !!settings.allowLiveCode,
+      callAI,
+      model: GEMINI_MODEL_STRONG,
+      computeWordBudget,
+      onProgress,
+    });
+    const failed = deck.slides.filter((sl) => (sl.warnings || []).some((w) => /couldn't write this slide/.test(w))).length;
+    if (failed > deck.slides.length / 2) throw new Error("most slides failed");
+    return deck;
+  } catch (e) {
+    onProgress && onProgress("Using the standard generator…");
+    const legacy = await legacyGenerateCurriculum(rawUnits, settings);
+    return { ...legacy, slides: legacy.slides.map((sl, i) => normalizeSlide(sl, i)) };
+  }
+}
+
+async function legacyGenerateCurriculum(rawUnits, settings) {
   const estimatedBudget = computeWordBudget(settings.durationMinutes, Math.max(1, rawUnits.length), settings.pace);
   const system = buildCurriculumSystemPrompt(settings, estimatedBudget);
   const user = `Course code: ${settings.courseCode || "(infer from content)"}
@@ -1447,9 +1400,136 @@ function CourseMetaScreen({ draft, editing, onChange, onContinue, onCancel }) {
 // One module = one uploaded/generated set of slides. Saving here never
 // enters a live session — it just adds the module to the course so students
 // can find it later, and so the lecturer can keep coming back to add more.
+// ---------------------------------------------------------------------------
+// Advanced slide editing (formulas, worked-example steps, diagrams, code steps…)
+// Text areas keep local text and commit on blur, so blank lines you type while
+// editing aren't swallowed by re-parsing on every keystroke.
+// ---------------------------------------------------------------------------
+function LineEditor({ label, value, onCommit, rows = 3, placeholder }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  return (
+    <label className="sk-edit-field">
+      <span>{label}</span>
+      <textarea
+        className="slide-card-notes"
+        rows={rows}
+        value={text}
+        placeholder={placeholder}
+        aria-label={label}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => { if (text !== value) onCommit(text); }}
+      />
+    </label>
+  );
+}
+
+const nonEmptyLines = (t) => String(t || "").split("\n").map((l) => l.trim()).filter(Boolean);
+
+function SlideAdvancedEditor({ slide: s, onChange }) {
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState("");
+  const isWorked = s.type === "worked_example" || (s.steps && s.steps.length);
+  const stepsText = (s.steps || []).map((st) => [st.label || "", st.say || "", st.latex || ""].join(" || ")).join("\n");
+
+  const recheck = async () => {
+    setChecking(true);
+    setCheckNote("");
+    try {
+      const { slide: v, issues } = await validateSlide(normalizeSlide(s));
+      onChange({ steps: v.steps, warnings: issues });
+      setCheckNote(issues.length ? `${issues.length} problem${issues.length > 1 ? "s" : ""} found — see below.` : "All formulas, calculations and diagrams checked out ✓");
+    } catch (e) {
+      setCheckNote("Couldn't run the check just now.");
+    }
+    setChecking(false);
+  };
+
+  return (
+    <details className="sk-advanced">
+      <summary>Advanced: formulas, steps, diagram, code walkthrough</summary>
+
+      <LineEditor label="Key formulas — one per line, LaTeX, optional caption after a |" rows={2} placeholder="E = mc^2 | Mass-energy equivalence"
+        value={(s.formulas || []).map((f) => (f.caption ? `${f.latex} | ${f.caption}` : f.latex)).join("\n")}
+        onCommit={(t) => onChange({ formulas: nonEmptyLines(t).map((l) => { const [latex, ...cap] = l.split("|"); return { latex: latex.trim(), caption: cap.join("|").trim() }; }) })} />
+
+      {isWorked && (
+        <>
+          <LineEditor label="Problem statement (inline maths between $ signs)" rows={2} value={(s.problem && s.problem.text) || ""}
+            onCommit={(t) => onChange({ problem: { text: t.trim(), latex: (s.problem && s.problem.latex) || "" } })} />
+          <LineEditor label="Worked steps — one per line:  label || what the lecturer says || LaTeX shown" rows={6} value={stepsText} placeholder="Factor || First we factor the quadratic. || (x-2)(x-3)=0"
+            onCommit={(t) => onChange({
+              steps: nonEmptyLines(t).map((l, i) => {
+                const parts = l.split("||").map((x) => x.trim());
+                const [label, say, latex] = parts.length >= 3 ? parts : parts.length === 2 ? ["", parts[0], parts[1]] : ["", parts[0], ""];
+                const prev = (s.steps || [])[i];
+                return { label, say, latex, verify: prev && prev.latex === latex ? prev.verify : null };
+              }),
+            })} />
+          <LineEditor label="Final answer (text)" rows={1} value={(s.finalAnswer && s.finalAnswer.text) || ""}
+            onCommit={(t) => onChange({ finalAnswer: { text: t.trim(), latex: (s.finalAnswer && s.finalAnswer.latex) || "" } })} />
+        </>
+      )}
+
+      {(s.diagram || s.type === "diagram") && (
+        <LineEditor label="Diagram (Mermaid code)" rows={6} value={(s.diagram && s.diagram.code) || ""} placeholder={"flowchart TD\n  A[Start] --> B[End]"}
+          onCommit={(t) => onChange({ diagram: { code: t.trim(), caption: (s.diagram && s.diagram.caption) || "" } })} />
+      )}
+
+      {s.table && (
+        <LineEditor label="Table — one row per line, cells separated by |, first line = headers" rows={5}
+          value={[s.table.headers, ...s.table.rows].map((r) => r.join(" | ")).join("\n")}
+          onCommit={(t) => { const rows = nonEmptyLines(t).map((l) => l.split("|").map((c) => c.trim())); if (rows.length >= 2) onChange({ table: { headers: rows[0], rows: rows.slice(1) } }); }} />
+      )}
+
+      {s.hasCode && (
+        <>
+          <div className="sk-edit-row">
+            <label className="sk-edit-field">
+              <span>Language</span>
+              <select value={s.language || "text"} onChange={(e) => onChange({ language: e.target.value })} aria-label="Code language">
+                {Object.entries(LANGUAGE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </label>
+            <label className="sk-edit-field">
+              <span>File name</span>
+              <input className="slide-card-title" value={s.filename || ""} onChange={(e) => onChange({ filename: e.target.value })} aria-label="Code file name" />
+            </label>
+          </div>
+          <LineEditor label="Code walkthrough — one per line:  startLine-endLine | what the lecturer says" rows={5} placeholder="1-3 | We start by declaring the class."
+            value={(s.codeSteps || []).map((c) => `${c.lines[0]}-${c.lines[1]} | ${c.say}`).join("\n")}
+            onCommit={(t) => onChange({
+              codeSteps: nonEmptyLines(t).map((l) => {
+                const [range, ...say] = l.split("|");
+                const [a, b] = range.split("-").map((x) => parseInt(x, 10));
+                return { lines: [a || 1, b || a || 1], say: say.join("|").trim() };
+              }).filter((c) => c.say),
+            })} />
+          <LineEditor label="Expected output (what the program prints)" rows={2} value={s.expectedOutput || ""} onCommit={(t) => onChange({ expectedOutput: t.replace(/\s+$/, "") })} />
+        </>
+      )}
+
+      {(s.takeaways || s.type === "summary") && (
+        <LineEditor label="Key takeaways — one per line" rows={4} value={(s.takeaways || []).join("\n")} onCommit={(t) => onChange({ takeaways: nonEmptyLines(t) })} />
+      )}
+
+      <div className="sk-edit-row">
+        <button className="nav-btn" onClick={recheck} disabled={checking}>
+          {checking ? <Loader2 className="spin" size={13} /> : <CheckCircle2 size={13} />} Re-check maths &amp; diagrams
+        </button>
+        {checkNote && <span className="sk-edit-note" role="status">{checkNote}</span>}
+      </div>
+      {s.warnings && s.warnings.length > 0 && (
+        <div className="sk-warnings" role="note"><strong>Please review</strong><ul>{s.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></div>
+      )}
+    </details>
+  );
+}
+
 function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndPreview, onCancel }) {
   const fileInputRef = useRef(null);
   const { moduleSettings, rawText, fileName, draft, phase, error } = setup;
+  const [genProgress, setGenProgress] = useState("");
 
   const updateModuleSettings = (patch) => patchSetup({ moduleSettings: { ...moduleSettings, ...patch } });
 
@@ -1481,7 +1561,8 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
     patchSetup({ error: "", phase: "generating" });
     try {
       const units = rawText.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-      const result = await generateCurriculum(units.length ? units : [rawText], generationSettings);
+      setGenProgress("Starting…");
+      const result = await generateCurriculum(units.length ? units : [rawText], generationSettings, setGenProgress);
       patchSetup({ draft: result, phase: "preview" });
     } catch (e) {
       patchSetup({ error: e.message || "Generation failed — try again.", phase: "input" });
@@ -1501,7 +1582,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
     durationMinutes: moduleSettings.durationMinutes,
     pace: moduleSettings.pace,
     allowLiveCode: moduleSettings.allowLiveCode,
-    slides: draft.slides,
+    slides: draft.slides.map((sl, i) => normalizeSlide(sl, i)),
     createdAt: Date.now(),
   });
 
@@ -1612,7 +1693,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
 
             <button className="explain-btn" disabled={phase === "generating"} onClick={handleGenerate}>
               {phase === "generating" ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
-              {phase === "generating" ? "Generating curriculum…" : "Generate curriculum"}
+              {phase === "generating" ? genProgress || "Generating curriculum…" : "Generate curriculum"}
             </button>
           </div>
         </div>
@@ -1631,6 +1712,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
             {draft.slides.map((s, i) => (
               <div className="slide-card" key={i}>
                 <div className="slide-card-head">
+                  <span className="sk-type-chip" title="Slide type">{TYPE_LABELS[s.type] || "Concept"}</span>
                   <input className="slide-card-title" aria-label={`Slide ${i + 1} title`} value={s.title} onChange={(e) => editSlide(i, { title: e.target.value })} />
                   <button className="icon-btn" onClick={() => removeSlide(i)} title="Remove slide" aria-label={`Remove slide: ${s.title}`}><Trash2 size={14} /></button>
                 </div>
@@ -1669,6 +1751,7 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                 {s.hasCode && (
                   <textarea className="slide-card-code" aria-label={`Code example for slide: ${s.title}`} rows={5} value={s.code || ""} onChange={(e) => editSlide(i, { code: e.target.value })} />
                 )}
+                <SlideAdvancedEditor slide={s} onChange={(patch) => editSlide(i, patch)} />
               </div>
             ))}
           </div>
@@ -2190,6 +2273,10 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [interimText, setInterimText] = useState("");
   const [voiceSupported, setVoiceSupported] = useState(true);
   const [typedCode, setTypedCode] = useState("");
+  // Progressive delivery for worked examples / code walkthroughs
+  const [reveal, setReveal] = useState({ slide: -1, count: Infinity });
+  const [activeLines, setActiveLines] = useState(null);
+  const [stepCaption, setStepCaption] = useState("");
   const typedCodeRef = useRef("");
   useEffect(() => {
     typedCodeRef.current = typedCode;
@@ -2260,6 +2347,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   }, [messages]);
 
   const slide = curriculum.slides[Math.min(slideIndex, curriculum.slides.length - 1)];
+  // Progressive reveal only applies while the lecturer is actively teaching this slide
+  const progressive = autopilotOn && reveal.slide === slideIndex;
   const wordBudget = computeWordBudget(settings.durationMinutes, curriculum.slides.length, settings.pace);
   const toneDesc = (TONE_OPTIONS.find((t) => t.id === settings.tone) || TONE_OPTIONS[0]).desc;
   const lecturerIdentity = `a ${toneDesc} university lecturer teaching ${curriculum.code} — ${curriculum.title}${settings.institution ? ` at ${settings.institution}` : ""}`;
@@ -2438,7 +2527,10 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const generateExplanation = useCallback(
     async (targetSlide) => {
       const system = `You are ${lecturerIdentity}. You are mid-lecture, speaking out loud to a room of students. Keep this explanation to about ${wordBudget} words. ${NATURAL_SPEECH_STYLE}`;
-      const detailContext = targetSlide.detail ? ` On-screen supporting text: ${targetSlide.detail}` : "";
+      const detailContext = (targetSlide.detail ? ` On-screen supporting text: ${targetSlide.detail}` : "") +
+        (targetSlide.diagram || targetSlide.plot || targetSlide.table || targetSlide.definition || targetSlide.formulas
+          ? ` Everything the students can see on this slide:\n${slideToPlainContext(targetSlide)}\nTalk them through what is on screen (for a diagram, walk through it step by step; say formulas in words). Never read symbols, LaTeX or code characters out letter by letter.`
+          : "");
       const prompt = targetSlide.hasCode
         ? `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext} You are about to type this code live on screen while you talk: ${targetSlide.code} Narrate it roughly in the order it will be typed, top to bottom, like you're writing it in front of the class.`
         : `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext}`;
@@ -2458,21 +2550,34 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const targetSlide = curriculum.slides[index];
       setViewMode(targetSlide.hasCode ? "ide" : "slides");
       setLecturerState2("loading");
-      const explanation = await generateExplanation(targetSlide);
+      const structuredUnits = buildStructuredUnits(targetSlide);
+      const isWalkthrough = !!(targetSlide.hasCode && targetSlide.codeSteps && targetSlide.codeSteps.length);
+      const explanation = structuredUnits ? structuredUnits.map((u) => u.say).join(" ") : await generateExplanation(targetSlide);
       if (!mountedRef.current) return;
       addMessage("lecturer", explanation, "explain");
       setLecturerState2("explaining");
 
-      if (targetSlide.hasCode) {
+      if (isWalkthrough) {
+        setTypedCode(targetSlide.code); // walkthroughs show the full program and highlight lines as they're explained
+      } else if (targetSlide.hasCode) {
         setTypedCode("");
         animateTyping(targetSlide.code, estimateSpeechDurationMs(explanation), 0);
       }
+      if (structuredUnits) setReveal({ slide: index, count: 0 });
 
-      const sentences = splitIntoSentences(explanation);
+      const sentences = structuredUnits ? structuredUnits.map((u) => u.say) : splitIntoSentences(explanation);
       let sentenceIndex = 0;
 
       while (sentenceIndex < sentences.length) {
         if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        if (structuredUnits) {
+          const u = structuredUnits[sentenceIndex];
+          if (u.reveal !== undefined) setReveal({ slide: index, count: u.reveal });
+          if ("lines" in u) {
+            setActiveLines(u.lines);
+            setStepCaption(u.lines ? u.say : "");
+          }
+        }
         const completed = await speakInterruptible(sentences[sentenceIndex]);
         if (!mountedRef.current) return;
 
@@ -2506,6 +2611,11 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         setTypedCode(targetSlide.code);
       }
       explainedSlides.current.add(index);
+      if (structuredUnits) {
+        setReveal({ slide: index, count: Infinity });
+        setActiveLines(null);
+        setStepCaption("");
+      }
 
       // Quick, human "did that land?" check before moving on.
       const isLast = index === curriculum.slides.length - 1;
@@ -2659,7 +2769,7 @@ Set "confidence" to "low" when: the question asks about institution-specific log
 Write "answer" to be spoken aloud (about ${answerBudget} words). If confidence is "high", answer directly — don't restate everything, just answer, then briefly say you'll continue the lecture. If confidence is "low": for logistics questions you can't know, say plainly you don't have that information and that you're flagging it for your instructor to follow up on directly — don't guess. For content questions you're just not fully sure about, give an honest best-effort attempt but clearly say you're not fully certain and that you're flagging it for your instructor to confirm.
 
 ${NATURAL_SPEECH_STYLE}`;
-      const prompt = `You were covering: "${slide.title}" (${slide.notes}). The student asks: "${questionText}"`;
+      const prompt = `You were covering this slide (teaching notes: ${slide.notes}). Everything that was on screen:\n${slideToPlainContext(slide)}\n\nThe student asks: "${questionText}"\nAnswer so it can be spoken aloud: say maths in words, never read LaTeX or code symbols out letter by letter.`;
       const answerPromise = askLecturer(system, prompt, fallbackAnswer);
 
       await ackPromise;
@@ -2769,6 +2879,9 @@ ${NATURAL_SPEECH_STYLE}`;
   const changeSlide = (dir) => {
     stopSpeaking();
     setAutopilotOn(false);
+    setReveal({ slide: -1, count: Infinity });
+    setActiveLines(null);
+    setStepCaption("");
     setLecturerState2("idle");
     setInterrupted(false);
     setSlideIndex((i) => Math.max(0, Math.min(curriculum.slides.length - 1, i + dir)));
@@ -2911,34 +3024,35 @@ ${NATURAL_SPEECH_STYLE}`;
 
           <div className="stage">
             {viewMode === "slides" ? (
-              <div className="slide">
-                <div className="slide-eyebrow"><span>{curriculum.unit}</span><span>{slideIndex + 1} / {curriculum.slides.length}</span></div>
-                <h2>{slide.title}</h2>
-                <ul>
-                  {slide.bullets.map((b, i) => (
-                    <li key={i}>{b}</li>
-                  ))}
-                </ul>
-                {slide.detail && <p className="slide-detail">{slide.detail}</p>}
-                {interrupted && lecturerState !== "idle" && (
-                  <div className="paused-ribbon">Paused mid-explanation to answer a question — will continue after</div>
-                )}
-              </div>
+              <SlideView
+                slide={slide}
+                unit={curriculum.unit}
+                index={slideIndex}
+                total={curriculum.slides.length}
+                revealCount={progressive ? reveal.count : Infinity}
+                showWarnings={role === "lecturer"}
+                footer={
+                  interrupted && lecturerState !== "idle" ? (
+                    <div className="paused-ribbon">Paused mid-explanation to answer a question — will continue after</div>
+                  ) : null
+                }
+              />
             ) : (
               <div className="ide">
-                <div className="ide-bar">
-                  {slide.title.replace(/\s+/g, "")}.java
-                  {lecturerState === "explaining" && slide.hasCode && (
-                    <span className="live-tag"><span className="live-dot" /> typing live</span>
-                  )}
-                </div>
-                {!explainedSlides.current.has(slideIndex) && typedCode === "" ? (
+                {!slide.codeSteps && !explainedSlides.current.has(slideIndex) && typedCode === "" ? (
                   <div className="ide-placeholder">// The lecturer will type this live while explaining.{"\n"}// Starting automatically…</div>
                 ) : (
-                  <pre className="ide-code">
-                    <span dangerouslySetInnerHTML={{ __html: highlightJava(typedCode) }} />
-                    {typedCode.length < slide.code.length && <span className="type-cursor">▍</span>}
-                  </pre>
+                  <CodePane
+                    code={slide.code}
+                    language={slide.language}
+                    filename={slide.filename}
+                    typedCode={slide.codeSteps ? null : typedCode}
+                    typing={!slide.codeSteps && typedCode.length < slide.code.length}
+                    activeLines={progressive ? activeLines : null}
+                    caption={progressive ? stepCaption : ""}
+                    expectedOutput={slide.expectedOutput && (slide.codeSteps ? !progressive || reveal.count === Infinity || !activeLines : typedCode.length >= slide.code.length) ? slide.expectedOutput : ""}
+                    liveTag={lecturerState === "explaining" && !slide.codeSteps}
+                  />
                 )}
               </div>
             )}

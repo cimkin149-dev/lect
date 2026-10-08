@@ -1,0 +1,15 @@
+import { toPdfSafe, latexToPlain } from "../src/slideKit/latex.js";
+import { buildFunctionPlot, buildCategoryChart } from "../src/slideKit/plot.js";
+import { compileFunction } from "../src/slideKit/mathVerify.js";
+let fail = 0;
+const t = (n, c, e) => { if (!c) { fail++; console.log("FAIL", n, e ?? ""); } else console.log("ok  ", n); };
+const safe = toPdfSafe(latexToPlain("x \\leq \\sqrt{y} \\times \\pi \\to \\infty, \\alpha_1^{4}"));
+t("pdf-safe is Latin-1 only", [...safe].every((c) => c.charCodeAt(0) <= 255), safe);
+t("pdf-safe keeps x × and ² etc", toPdfSafe("2 × 3² ÷ 4 ± 1°") === "2 × 3² ÷ 4 ± 1°");
+t("pdf-safe converts smart quotes/dashes", toPdfSafe("It’s “fine” — really…") === 'It\'s "fine"  -  really...' || toPdfSafe("It’s “fine” — really…").includes("It's \"fine\""));
+t("greek words", toPdfSafe("θ and Δ") === "theta and Delta");
+const light = buildFunctionPlot({ xMin: -2, xMax: 2 }, [{ label: "x^2", f: await compileFunction("x^2") }], { light: true });
+t("light plot: white bg, dark text, sized", light.ok && light.svg.includes('fill="#FFFFFF"') && light.svg.includes("#555555") && !light.svg.includes("#C7CCD4") && /width="640"/.test(light.svg));
+const dark = buildCategoryChart({ kind: "bar", labels: ["a"], series: [{ name: "s", values: [1] }] });
+t("dark plot unchanged (no bg rect)", dark.ok && !dark.svg.includes('fill="#FFFFFF"') && dark.svg.includes("#8890A0"));
+console.log(fail ? `\n${fail} FAILED` : "\nALL PASS"); process.exit(fail ? 1 : 0);

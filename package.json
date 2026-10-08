@@ -1,21 +1,29 @@
 {
   "name": "semai",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "sh .tests/run_all.sh"
   },
   "dependencies": {
     "jspdf": "^4.2.1",
+    "katex": "^0.19.0",
     "lucide-react": "^0.383.0",
+    "mathjs": "^15.2.0",
+    "mermaid": "^12.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^17.13.0",
+    "jsdom": "^30.1.2",
     "vite": "^5.4.0",
     "vite-plugin-pwa": "^0.20.5"
   }

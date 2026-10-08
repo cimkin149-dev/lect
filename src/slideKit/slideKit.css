@@ -1,0 +1,95 @@
+/* Slide kit: layouts for math, worked examples, diagrams, plots, tables and the code pane. */
+.sk-slide { max-width: 100%; }
+.sk-type-chip { background: rgba(232,163,61,0.14); border: 1px solid rgba(232,163,61,0.4); color: #E8A33D; border-radius: 6px; padding: 1px 7px; margin-right: 6px; font-size: 10px; }
+.sk-tag { display: inline-block; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #E8A33D; margin-bottom: 6px; }
+.sk-math-inline .katex { font-size: 1.05em; }
+.sk-math-block { overflow-x: auto; overflow-y: hidden; padding: 6px 0; color: #EDEFF2; font-size: 1.15em; }
+.sk-math-block .katex-display { margin: 0.2em 0; }
+.sk-formulas { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+.sk-formula { background: #1B222C; border: 1px solid #2A313C; border-left: 3px solid #E8A33D; border-radius: 10px; padding: 8px 16px; }
+.sk-caption { font-size: 12.5px; color: #8890A0; text-align: center; margin-top: 4px; }
+.sk-def { background: #1B222C; border: 1px solid #2A313C; border-radius: 12px; padding: 16px 18px; margin-bottom: 18px; }
+.sk-def-term { font-family: 'Space Grotesk', sans-serif; font-size: 22px; color: #E8A33D; margin-bottom: 6px; }
+.sk-def-text { margin: 0 0 10px; font-size: 16px; line-height: 1.7; color: #EDEFF2; }
+.sk-def-example { font-size: 14px; line-height: 1.7; color: #B8BEC9; border-top: 1px dashed #2F3743; padding-top: 10px; }
+.sk-table-wrap { overflow-x: auto; margin-bottom: 14px; }
+.sk-table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.sk-table th, .sk-table td { border: 1px solid #2A313C; padding: 9px 12px; text-align: left; vertical-align: top; line-height: 1.55; color: #C7CCD4; }
+.sk-table thead th { background: #232C38; color: #EDEFF2; font-family: 'Space Grotesk', sans-serif; }
+.sk-table tbody th { background: #1B222C; color: #E8A33D; font-weight: 600; }
+.sk-worked { display: flex; flex-direction: column; gap: 14px; }
+.sk-problem, .sk-final { background: #1B222C; border: 1px solid #2A313C; border-radius: 12px; padding: 12px 16px; }
+.sk-problem p, .sk-final p { margin: 0 0 4px; font-size: 16px; line-height: 1.65; color: #EDEFF2; }
+.sk-final { border-color: rgba(79,178,134,0.55); background: rgba(47,111,79,0.14); animation: sk-pop 0.35s ease both; }
+.sk-final .sk-tag { color: #6FD3A4; }
+.sk-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sk-step { border: 1px solid #262E39; border-radius: 10px; padding: 8px 14px; background: #1A2029; animation: sk-pop 0.3s ease both; }
+.sk-step.current { border-color: #E8A33D; background: #232B35; box-shadow: 0 0 0 1px rgba(232,163,61,0.25); }
+.sk-step-head { display: flex; align-items: center; gap: 8px; }
+.sk-step-num { width: 22px; height: 22px; border-radius: 50%; background: #2A313C; color: #E8A33D; font-size: 12px; display: grid; place-items: center; font-family: 'JetBrains Mono', monospace; flex: 0 0 auto; }
+.sk-step.current .sk-step-num { background: #E8A33D; color: #1B1408; }
+.sk-step-label { font-size: 13px; color: #C7CCD4; font-weight: 600; }
+.sk-badge { margin-left: auto; font-size: 10.5px; border-radius: 6px; padding: 1px 7px; }
+.sk-badge.ok { color: #6FD3A4; border: 1px solid rgba(79,178,134,0.5); }
+.sk-badge.bad { color: #F2A5A5; border: 1px solid rgba(224,115,90,0.6); }
+.sk-split { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 760px) { .sk-split { grid-template-columns: 1fr; } }
+.sk-side ul { padding-left: 18px; font-size: 14.5px !important; line-height: 1.75 !important; }
+.sk-figure { margin: 0; }
+.sk-diagram { background: #1B222C; border: 1px solid #2A313C; border-radius: 12px; padding: 12px; overflow: auto; text-align: center; }
+.sk-diagram svg { max-width: 100%; height: auto; }
+.sk-plot svg { width: 100%; height: auto; }
+.sk-skeleton, .sk-diagram-fallback { background: #1B222C; border: 1px dashed #353E4B; border-radius: 12px; padding: 28px 16px; text-align: center; color: #8890A0; font-size: 13px; }
+.sk-hint { margin-top: 14px; font-size: 12.5px; color: #8890A0; font-style: italic; }
+.sk-takeaways { list-style: none; padding-left: 0 !important; }
+.sk-takeaways li { display: flex; gap: 10px; align-items: flex-start; }
+.sk-check { color: #6FD3A4; font-weight: 700; }
+.sk-checkq { margin-top: 14px; background: #1B222C; border: 1px solid #2A313C; border-radius: 12px; padding: 12px 16px; }
+.sk-checkq p { margin: 0 0 8px; color: #EDEFF2; line-height: 1.6; }
+.sk-answer { color: #6FD3A4 !important; }
+.sk-warnings { margin-top: 18px; padding: 10px 14px; border: 1px solid rgba(224,115,90,0.55); background: rgba(224,115,90,0.08); border-radius: 10px; font-size: 12.5px; color: #F2B5A5; }
+.sk-warnings ul { margin: 6px 0 0; padding-left: 18px !important; font-size: 12.5px !important; line-height: 1.6 !important; color: #F2B5A5; }
+@keyframes sk-pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sk-step, .sk-final { animation: none; } }
+
+/* Code pane */
+.sk-ide { display: flex; flex-direction: column; gap: 10px; height: 100%; }
+.sk-ide-bar { display: flex; justify-content: space-between; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8B93A1; border-bottom: 1px solid #232A34; padding-bottom: 8px; }
+.sk-ide-right { display: flex; gap: 10px; align-items: center; }
+.sk-lang { background: #232C38; color: #C7CCD4; border-radius: 6px; padding: 1px 8px; font-size: 11px; }
+.sk-ide-body { flex: 1; min-height: 120px; overflow: auto; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.75; background: #161B22; border: 1px solid #232A34; border-radius: 10px; padding: 10px 0; }
+.sk-line { display: flex; white-space: pre; padding-right: 14px; border-left: 3px solid transparent; transition: opacity 0.2s ease, background 0.2s ease; }
+.sk-line.active { background: rgba(232,163,61,0.13); border-left-color: #E8A33D; }
+.sk-line.dim { opacity: 0.42; }
+.sk-ln { width: 38px; flex: 0 0 38px; text-align: right; padding-right: 12px; color: #4F5866; user-select: none; }
+.sk-code { color: #D3D8E0; white-space: pre; }
+.sk-step-caption { font-size: 14px; line-height: 1.65; color: #EDEFF2; background: #1B222C; border: 1px solid #2A313C; border-left: 3px solid #E8A33D; border-radius: 8px; padding: 10px 14px; }
+.sk-run { display: flex; flex-direction: column; gap: 8px; }
+.sk-run-btn { align-self: flex-start; background: #E8A33D; color: #1B1408; border: none; border-radius: 8px; padding: 7px 14px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; }
+.sk-run-btn:disabled { opacity: 0.6; cursor: wait; }
+.sk-run-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.sk-output { background: #12161C; border: 1px solid #232A34; border-radius: 8px; padding: 8px 12px; }
+.sk-output-label { font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: #8890A0; margin-bottom: 4px; }
+.sk-output pre { margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #C7E8D5; white-space: pre-wrap; }
+.tok-number { color: #D98FE0; }
+.tok-type { color: #4FB286; }
+.tok-fn { color: #E6C07B; }
+.tok-preproc { color: #C98A6B; }
+.tok-tag { color: #6B95FF; }
+
+/* Presentation mode scaling */
+.room.presentation .sk-def-term { font-size: 32px; }
+.room.presentation .sk-def-text, .room.presentation .sk-problem p, .room.presentation .sk-final p { font-size: 22px; }
+.room.presentation .sk-table { font-size: 19px; }
+.room.presentation .sk-math-block { font-size: 1.5em; }
+.room.presentation .sk-step-label { font-size: 17px; }
+.room.presentation .sk-ide-body { font-size: 17px; }
+.room.presentation .sk-step-caption { font-size: 18px; }
+
+/* Advanced slide editor (lecturer preview) */
+.sk-advanced { margin-top: 10px; border-top: 1px dashed #2F3743; padding-top: 8px; }
+.sk-advanced > summary { cursor: pointer; font-size: 12.5px; color: #E8A33D; padding: 4px 0; }
+.sk-edit-field { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; font-size: 11.5px; color: #8890A0; flex: 1; }
+.sk-edit-field select { background: #161B22; color: #EDEFF2; border: 1px solid #2A313C; border-radius: 8px; padding: 7px 8px; font-family: inherit; }
+.sk-edit-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.sk-edit-note { font-size: 12px; color: #8FD3AE; }
