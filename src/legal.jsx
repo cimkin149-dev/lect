@@ -10,10 +10,10 @@ import React from "react";
 export const LEGAL = {
   isDraft: true,
   productName: "SEMAI",
-  operatorName: "[OPERATOR NAME — the person or company that runs SEMAI]",
-  contactEmail: "[CONTACT EMAIL]",
-  address: "[POSTAL ADDRESS, KAMPALA, UGANDA]",
-  effectiveDate: "[EFFECTIVE DATE]",
+  operatorName: "SayMyTech Developers",
+  contactEmail: "stevearchie256@gmail.com",
+  address: "10002, Kampala, Uganda",
+  effectiveDate: "8 October 2026",
 };
 
 const h2 = { fontSize: 16, margin: "26px 0 8px", color: "#EDEFF2", fontFamily: "'Space Grotesk', sans-serif" };
