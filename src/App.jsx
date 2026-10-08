@@ -251,7 +251,10 @@ async function supabaseRequest(path, options = {}, accessToken = null) {
     const text = await res.text().catch(() => "");
     throw new Error(`Supabase request failed (${res.status}): ${text.slice(0, 200)}`);
   }
-  return res.status === 204 ? null : res.json();
+  if (res.status === 204) return null;
+  // Prefer: return=minimal yields a 201 with an empty body — don't try to parse it.
+  const bodyText = await res.text();
+  return bodyText ? JSON.parse(bodyText) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +422,9 @@ async function flagQuestionForLecturer(courseId, moduleId, studentName, question
   try {
     await supabaseRequest("/flagged_questions", {
       method: "POST",
+      // return=minimal: an anonymous student can INSERT but not SELECT this
+      // row under RLS, so asking Postgres to read it back would fail the write.
+      headers: { Prefer: "return=minimal" },
       body: JSON.stringify([
         {
           id: makeId("flag"),
@@ -459,6 +465,9 @@ async function recordSession(session, accessToken) {
       "/sessions",
       {
         method: "POST",
+        // return=minimal: anonymous sessions (student_id null) can't be read
+        // back by the inserter under RLS, so don't request the row back.
+        headers: { Prefer: "return=minimal" },
         body: JSON.stringify([
           {
             id: makeId("session"),
