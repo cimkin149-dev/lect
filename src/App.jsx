@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { PrivacyPolicyScreen, TermsScreen, LegalLinks } from "./legal.jsx";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
   Sparkles, Trash2, ArrowRight, GraduationCap, Users, Settings2, RotateCcw,
-  AlertTriangle, Clock, FileDown, Maximize2, Minimize2, Flag, CheckCircle2,
-} from "lucide-react";
+  AlertTriangle, Clock, FileDown, Maximize2, Minimize2, Flag, CheckCircle2, Download, } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // No npm install needed for PPTX/PDF parsing below — it's implemented with
@@ -226,8 +226,8 @@ function primeAudioForVoice() {
 // TTS calls through a server function instead, so the key never reaches
 // the client at all.
 // ---------------------------------------------------------------------------
-const SUPABASE_URL = "https://rodwpttdegrfwqioyoci.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJvZHdwdHRkZWdyZndxaW95b2NpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4NDQwOTYsImV4cCI6MjEwMDQyMDA5Nn0.clDK1TdN36pyrKltE0PrY3Q_QdwMcZoOA4mskyI38hQ";
+export const SUPABASE_URL = "https://rodwpttdegrfwqioyoci.supabase.co";
+export const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJvZHdwdHRkZWdyZndxaW95b2NpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4NDQwOTYsImV4cCI6MjEwMDQyMDA5Nn0.clDK1TdN36pyrKltE0PrY3Q_QdwMcZoOA4mskyI38hQ";
 
 const supabaseEnabled = () => Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
@@ -505,6 +505,61 @@ async function fetchMySessions(studentId, accessToken) {
     {},
     accessToken
   );
+}
+
+// ---------------------------------------------------------------------------
+// Account data controls (roadmap Phase 5): export + delete. Both run under the
+// signed-in user's OWN token, so RLS guarantees they only ever touch their own
+// rows. Deletion goes through the delete-account Edge Function because removing
+// the auth user itself needs admin rights no browser key can hold. Foreign keys
+// cascade, so deleting a lecturer also removes their courses, modules, flags and
+// the session records attached to those courses (the UI says so before confirming).
+// ---------------------------------------------------------------------------
+async function exportMyData(session, kind) {
+  const token = session.accessToken;
+  const uid = encodeURIComponent(session.user.id);
+  const out = {
+    exportedAt: new Date().toISOString(),
+    accountType: kind,
+    account: { id: session.user.id, email: session.user.email },
+  };
+  if (kind === "lecturer") {
+    const courses = await supabaseRequest(`/courses?owner_id=eq.${uid}&select=*`, {}, token);
+    out.courses = courses;
+    const ids = courses.map((c) => c.id);
+    if (ids.length > 0) {
+      const list = encodeURIComponent(`(${ids.map((i) => `"${i}"`).join(",")})`);
+      out.modules = await supabaseRequest(`/modules?course_id=in.${list}&select=*`, {}, token);
+      out.flagged_questions = await supabaseRequest(`/flagged_questions?course_id=in.${list}&select=*`, {}, token);
+      out.sessions = await supabaseRequest(`/sessions?course_id=in.${list}&select=*`, {}, token);
+    } else {
+      out.modules = [];
+      out.flagged_questions = [];
+      out.sessions = [];
+    }
+  } else {
+    out.sessions = await supabaseRequest(`/sessions?student_id=eq.${uid}&select=*,courses(code,title,institution)`, {}, token);
+  }
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `semai-my-data-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function deleteMyAccount(session) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || data.message || `Account deletion failed (${res.status}). Sign out, sign in again and retry.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,7 +1256,7 @@ ${rawUnits.map((u, i) => `--- Unit ${i + 1} ---\n${u}`).join("\n\n")}`;
 // ---------------------------------------------------------------------------
 // Role select
 // ---------------------------------------------------------------------------
-function RoleSelectScreen({ onSelectRole }) {
+function RoleSelectScreen({ onSelectRole, onOpenLegal }) {
   return (
     <div className="join-screen">
       <div className="join-card">
@@ -1214,6 +1269,7 @@ function RoleSelectScreen({ onSelectRole }) {
         <button className="join-btn secondary" onClick={() => onSelectRole("student")}>
           <Users size={16} /> I'm a student — join a session
         </button>
+        <LegalLinks onOpen={onOpenLegal} />
       </div>
     </div>
   );
@@ -1225,7 +1281,7 @@ function RoleSelectScreen({ onSelectRole }) {
 // anything: without a real signed-in user, there's no identity for the
 // database to scope writes to.
 // ---------------------------------------------------------------------------
-function AuthScreen({ onAuthenticated, onBack, role = "lecturer" }) {
+function AuthScreen({ onAuthenticated, onBack, onOpenLegal, role = "lecturer" }) {
   const [mode, setMode] = useState("signin"); // signin | signup
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1295,6 +1351,8 @@ function AuthScreen({ onAuthenticated, onBack, role = "lecturer" }) {
             <button className="join-btn" disabled={busy} onClick={submit}>
               {busy ? <Loader2 className="spin" size={14} /> : null} {mode === "signup" ? "Create account" : "Sign in"}
             </button>
+            {mode === "signup" && <div style={{ fontSize: 12, color: "#8890A0", marginTop: 10 }}>By creating an account you agree to the Terms of Service and Privacy Policy.</div>}
+            {onOpenLegal && <LegalLinks onOpen={onOpenLegal} />}
           </>
         )}
 
@@ -1749,7 +1807,89 @@ function JoinScreen({ courses, onJoin, onBack, studentSession, onStudentSignIn, 
 // A signed-in student's own session history — same underlying data as the
 // lecturer's session view, scoped to "sessions I attended" instead of
 // "sessions for a course I own."
-function MyHistoryScreen({ session, onBack }) {
+function AccountDataPanel({ session, kind, onDeleted, onOpenLegal }) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [note, setNote] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState("");
+
+  const consequence =
+    kind === "lecturer"
+      ? "This permanently deletes your account, all your courses and modules, the flagged questions on them, and the session records students saved for those courses. It cannot be undone."
+      : "This permanently deletes your account and your saved session history. It cannot be undone.";
+
+  const doExport = async () => {
+    setError("");
+    setNote("");
+    setBusy("export");
+    try {
+      await exportMyData(session, kind);
+      setNote("Your data file was downloaded.");
+    } catch (e) {
+      setError(e.message || "Couldn't export your data. Sign out, sign in again and retry.");
+    }
+    setBusy("");
+  };
+
+  const doDelete = async () => {
+    setError("");
+    setBusy("delete");
+    try {
+      await deleteMyAccount(session);
+      onDeleted();
+    } catch (e) {
+      setError(e.message || "Couldn't delete the account.");
+      setBusy("");
+    }
+  };
+
+  return (
+    <section className="account-panel" aria-labelledby="account-data-heading">
+      <h2 id="account-data-heading" className="account-title">Your data</h2>
+      <p className="account-text">
+        You can download a copy of everything stored about you, or delete your account. See the{" "}
+        <button className="skip-link inline" onClick={() => onOpenLegal("privacy")}>Privacy Policy</button>.
+      </p>
+      <div className="account-actions">
+        <button className="nav-btn" disabled={busy !== ""} onClick={doExport}>
+          {busy === "export" ? <Loader2 className="spin" size={13} /> : <Download size={13} />} Download my data
+        </button>
+        {!confirming && (
+          <button className="nav-btn danger" disabled={busy !== ""} onClick={() => setConfirming(true)}>
+            <Trash2 size={13} /> Delete my account
+          </button>
+        )}
+      </div>
+      {confirming && (
+        <div className="account-confirm" role="alertdialog" aria-label="Confirm account deletion">
+          <p className="account-text" style={{ color: "#F2A5A5" }}>{consequence}</p>
+          <label className="account-text" htmlFor="delete-confirm-input">Type DELETE to confirm:</label>
+          <input
+            id="delete-confirm-input"
+            className="join-input"
+            style={{ maxWidth: 220 }}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            autoComplete="off"
+          />
+          <div className="account-actions">
+            <button className="nav-btn danger" disabled={typed !== "DELETE" || busy !== ""} onClick={doDelete}>
+              {busy === "delete" ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />} Permanently delete
+            </button>
+            <button className="nav-btn" disabled={busy !== ""} onClick={() => { setConfirming(false); setTyped(""); setError(""); }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <div className="setup-error" role="alert"><AlertTriangle size={13} /> {error}</div>}
+      {note && <div className="db-status ok" role="status" style={{ display: "block" }}>{note}</div>}
+    </section>
+  );
+}
+
+function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
@@ -1805,6 +1945,8 @@ function MyHistoryScreen({ session, onBack }) {
           ))}
         </div>
       )}
+
+      <AccountDataPanel session={session} kind="student" onDeleted={onAccountDeleted} onOpenLegal={onOpenLegal} />
     </div>
   );
 }
@@ -1813,7 +1955,7 @@ function MyHistoryScreen({ session, onBack }) {
 // far, and the two things a lecturer actually needs from here — add
 // another module to a course, or preview one as a student would see it.
 // Saving a module always lands back here, never in a live session.
-function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewInsights }) {
+function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccountDeleted, onOpenLegal, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewInsights }) {
   const statusLabel = {
     connected: { text: "Connected to Supabase — courses persist across refreshes", cls: "ok" },
     loading: { text: "Connecting to Supabase…", cls: "loading" },
@@ -1879,6 +2021,8 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, onNewCourse, onEd
           </div>
         ))}
       </div>
+
+      {account && <AccountDataPanel session={account} kind="lecturer" onDeleted={onAccountDeleted} onOpenLegal={onOpenLegal} />}
     </div>
   );
 }
@@ -2895,7 +3039,7 @@ ${NATURAL_SPEECH_STYLE}`;
 // navigating back and forth (e.g. lecturer editing session mid-demo).
 // ---------------------------------------------------------------------------
 export default function SEMAIApp() {
-  const [stage, setStage] = useState("role"); // role | auth | studentAuth | dashboard | flags | myHistory | courseMeta | moduleSetup | join | room
+  const [stage, setStage] = useState("role"); // role | auth | studentAuth | dashboard | flags | myHistory | courseMeta | moduleSetup | join | room | privacy | terms
   const [role, setRole] = useState(null);
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
@@ -2907,6 +3051,7 @@ export default function SEMAIApp() {
   const [dbStatus, setDbStatus] = useState(supabaseEnabled() ? "loading" : "local"); // loading | connected | error | local
   const [session, setSession] = useState(null); // { accessToken, refreshToken, user: {id, email} } | null
   const [studentSession, setStudentSession] = useState(null); // same shape, separate identity/storage — a student account isn't a lecturer account
+  const [legalReturnStage, setLegalReturnStage] = useState("role");
 
   // Try to restore a lecturer session on load (refreshing it, since access
   // tokens expire after ~1hr but refresh tokens last much longer). Silently
@@ -3000,6 +3145,31 @@ export default function SEMAIApp() {
     saveSessionLocally(null, STUDENT_SESSION_STORAGE_KEY);
   };
 
+  const openLegal = (which) => {
+    setLegalReturnStage(stage);
+    setStage(which);
+  };
+
+  // After the delete-account function succeeds the auth user is gone, so drop
+  // every local trace of the session and anything cached for that user.
+  const handleLecturerAccountDeleted = () => {
+    const uid = session?.user?.id;
+    setSession(null);
+    saveSessionLocally(null);
+    setCourses((cs) => {
+      const remaining = cs.filter((c) => c.ownerId !== uid);
+      return remaining.length > 0 ? remaining : [DEFAULT_COURSE];
+    });
+    setInsightsCourse(null);
+    setStage("role");
+  };
+
+  const handleStudentAccountDeleted = () => {
+    setStudentSession(null);
+    saveSessionLocally(null, STUDENT_SESSION_STORAGE_KEY);
+    setStage("role");
+  };
+
   const handleNewCourse = () => {
     setCourseDraft({
       id: makeId("course"), code: "", title: "", institution: "",
@@ -3085,6 +3255,7 @@ export default function SEMAIApp() {
       <main>
       {stage === "role" && (
         <RoleSelectScreen
+          onOpenLegal={openLegal}
           onSelectRole={(r) => {
             setRole(r);
             if (r === "lecturer") {
@@ -3098,12 +3269,17 @@ export default function SEMAIApp() {
           }}
         />
       )}
-      {stage === "auth" && <AuthScreen onAuthenticated={handleAuthenticated} onBack={() => setStage("role")} />}
+      {stage === "auth" && <AuthScreen onAuthenticated={handleAuthenticated} onBack={() => setStage("role")} onOpenLegal={openLegal} />}
+      {stage === "privacy" && <PrivacyPolicyScreen onBack={() => setStage(legalReturnStage)} />}
+      {stage === "terms" && <TermsScreen onBack={() => setStage(legalReturnStage)} />}
       {stage === "dashboard" && (
         <LecturerDashboard
           courses={myCourses}
           dbStatus={dbStatus}
           lecturerEmail={session?.user?.email}
+          account={supabaseEnabled() ? session : null}
+          onAccountDeleted={handleLecturerAccountDeleted}
+          onOpenLegal={openLegal}
           onNewCourse={handleNewCourse}
           onEditCourse={handleEditCourse}
           onAddModule={handleAddModule}
@@ -3150,10 +3326,10 @@ export default function SEMAIApp() {
         />
       )}
       {stage === "studentAuth" && (
-        <AuthScreen role="student" onAuthenticated={handleStudentAuthenticated} onBack={() => setStage("join")} />
+        <AuthScreen role="student" onAuthenticated={handleStudentAuthenticated} onBack={() => setStage("join")} onOpenLegal={openLegal} />
       )}
       {stage === "myHistory" && studentSession && (
-        <MyHistoryScreen session={studentSession} onBack={() => setStage("join")} />
+        <MyHistoryScreen session={studentSession} onBack={() => setStage("join")} onAccountDeleted={handleStudentAccountDeleted} onOpenLegal={openLegal} />
       )}
       {stage === "room" && roomData && (
         <LectureRoom
@@ -3266,6 +3442,15 @@ function GlobalStyles() {
       .setup-error { display: flex; align-items: center; gap: 6px; color: #F0A0A0; font-size: 12px; margin-top: 10px; }
       .skip-link { background: none; border: none; color: #8890A0; font-size: 12px; text-decoration: underline; cursor: pointer; margin-top: 10px; padding: 4px; }
       .skip-link.inline { margin: 0 0 0 8px; padding: 0; display: inline; }
+      .legal-body ul { padding-left: 20px; margin: 0 0 10px; }
+      .legal-body, .account-panel { text-align: left; }
+      .account-panel { max-width: 720px; margin: 36px 0 24px; padding-top: 18px; border-top: 1px solid #2A313A; }
+      .account-title { font-family: 'Space Grotesk', sans-serif; font-size: 15px; margin: 0 0 6px; color: #EDEFF2; }
+      .account-text { font-size: 13px; line-height: 1.55; color: #8890A0; margin: 0 0 10px; }
+      .account-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
+      .account-confirm { margin: 10px 0; padding: 12px; border: 1px solid #5A2A2A; border-radius: 8px; background: #1C1416; }
+      .nav-btn.danger { border-color: #7A3030; color: #F2A5A5; }
+      .nav-btn:disabled { opacity: 0.5; cursor: not-allowed; }
       .signed-in-badge { font-size: 12px; color: #6FBF8A; background: rgba(111,191,138,0.1); border: 1px solid rgba(111,191,138,0.25); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; text-align: left; }
 
       .preview-wrap { display: flex; flex-direction: column; gap: 14px; }

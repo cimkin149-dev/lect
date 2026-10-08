@@ -1,5 +1,23 @@
 # SEMAI — Development Roadmap
 
+## Status (updated 8 Oct 2026)
+
+| Phase | Status |
+|---|---|
+| 0. Harden | **Done** — RLS review + hardening migration, client error logging (`src/errorLogging.jsx`, `client_errors` table), AI proxy hardening (v5: header key, model allowlist, size cap, best-effort per-IP rate limit) |
+| 1. AI confidence & escalation | **Done** (anonymous saves fixed with `return=minimal`) |
+| 2. Lecturer analytics & session history | **Done** (same fix) |
+| 3. Student identity | **Done** |
+| 4. Accessibility | **Done** (contrast check not independently verified) |
+| 5. Privacy, terms, data controls | **Built, pending review** — draft Privacy Policy + Terms (`src/legal.jsx`, placeholders must be filled, lawyer review needed), in-app "Download my data" and "Delete my account" |
+| 6. Multi-student real-time classrooms | Not started (deliberately gated on a real pilot) |
+| 7. LMS / SSO | Not started (gated on an institutional sandbox) |
+
+Known limits: the proxy rate limiter is per running instance, not global; error logs
+have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
+
+---
+
 **Purpose of this document:** an honest, ordered plan for taking SEMAI from
 "working demo" to a system credible for (a) university adoption and (b) a
 Y Combinator application. Phases are sequenced by what actually de-risks
