@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { PrivacyPolicyScreen, TermsScreen, LegalLinks } from "./legal.jsx";
+import SplashScreen, { VersionTag } from "./SplashScreen.jsx";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
@@ -618,11 +619,13 @@ async function callAI(systemPrompt, userPrompt, maxTokens, model) {
 // combined request could), and if a single slide's call fails or hits a
 // free-tier rate limit, the rest still succeed instead of losing everything.
 // ---------------------------------------------------------------------------
-async function generateLectureNotes(curriculum, onProgress) {
+async function generateLectureNotes(curriculum, onProgress, upToCount) {
   const sections = [];
-  for (let i = 0; i < curriculum.slides.length; i++) {
+  // Only the slides the student actually reached — notes should cover what they attended.
+  const count = Math.max(1, Math.min(upToCount || curriculum.slides.length, curriculum.slides.length));
+  for (let i = 0; i < count; i++) {
     const slide = curriculum.slides[i];
-    onProgress && onProgress(`Writing notes for "${slide.title}" (${i + 1}/${curriculum.slides.length})…`);
+    onProgress && onProgress(`Writing notes for "${slide.title}" (${i + 1}/${count})…`);
     // Deliberately NOT written as "you are the lecturer" and deliberately
     // NOT fed slide.notes (that's narration guidance for the spoken
     // version) — both of those together were the reason earlier notes came
@@ -1270,6 +1273,7 @@ function RoleSelectScreen({ onSelectRole, onOpenLegal }) {
           <Users size={16} /> I'm a student — join a session
         </button>
         <LegalLinks onOpen={onOpenLegal} />
+        <VersionTag style={{ marginTop: 6 }} />
       </div>
     </div>
   );
@@ -2801,9 +2805,11 @@ ${NATURAL_SPEECH_STYLE}`;
   };
 
   const handleDownloadNotes = async () => {
+    if (notesStatus === "generating") return;
     setNotesStatus("generating");
     try {
-      const sections = await generateLectureNotes(curriculum, setNotesProgress);
+      const upTo = sessionComplete ? curriculum.slides.length : maxSlideReachedRef.current + 1;
+      const sections = await generateLectureNotes(curriculum, setNotesProgress, upTo);
       if (!mountedRef.current) return;
       await downloadLectureNotesPdf(curriculum, sections);
       setNotesStatus("idle");
@@ -2818,6 +2824,13 @@ ${NATURAL_SPEECH_STYLE}`;
   useEffect(() => {
     if (viewMode === "ide" && !slide.hasCode) setViewMode("slides");
   }, [slide, viewMode]);
+
+  // Furthest slide the student has reached — notes cover everything up to here,
+  // even if they navigated manually and auto-lecture never reached the end.
+  const maxSlideReachedRef = useRef(0);
+  useEffect(() => {
+    maxSlideReachedRef.current = Math.max(maxSlideReachedRef.current, slideIndex);
+  }, [slideIndex]);
 
   const statusLabel = () => {
     if (lecturerState === "loading") return "Thinking…";
@@ -2847,6 +2860,10 @@ ${NATURAL_SPEECH_STYLE}`;
           </button>
           <button className={`topbar-edit ${autopilotOn ? "on" : ""}`} onClick={toggleAutopilot} title="Toggle automatic lecture" aria-pressed={autopilotOn}>
             {autopilotOn ? <Volume2 size={13} /> : <VideoOff size={13} />} {autopilotOn ? "Auto-lecture on" : "Auto-lecture off"}
+          </button>
+          <button className="topbar-edit" onClick={handleDownloadNotes} disabled={notesStatus === "generating"} title="Download written notes for the slides covered so far">
+            {notesStatus === "generating" ? <Loader2 className="spin" size={13} /> : <FileDown size={13} />}{" "}
+            {notesStatus === "generating" ? "Preparing notes…" : notesStatus === "error" ? "Retry notes" : "Notes (PDF)"}
           </button>
           <button className={`topbar-edit ${presentationMode ? "on" : ""}`} onClick={togglePresentationMode} title="Toggle presentation mode (bigger slide view)" aria-pressed={presentationMode}>
             {presentationMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />} {presentationMode ? "Exit presentation" : "Presentation mode"}
@@ -3039,7 +3056,7 @@ ${NATURAL_SPEECH_STYLE}`;
 // navigating back and forth (e.g. lecturer editing session mid-demo).
 // ---------------------------------------------------------------------------
 export default function SEMAIApp() {
-  const [stage, setStage] = useState("role"); // role | auth | studentAuth | dashboard | flags | myHistory | courseMeta | moduleSetup | join | room | privacy | terms
+  const [stage, setStage] = useState("splash"); // splash | role | auth | studentAuth | dashboard | flags | myHistory | courseMeta | moduleSetup | join | room | privacy | terms
   const [role, setRole] = useState(null);
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
@@ -3051,7 +3068,7 @@ export default function SEMAIApp() {
   const [dbStatus, setDbStatus] = useState(supabaseEnabled() ? "loading" : "local"); // loading | connected | error | local
   const [session, setSession] = useState(null); // { accessToken, refreshToken, user: {id, email} } | null
   const [studentSession, setStudentSession] = useState(null); // same shape, separate identity/storage — a student account isn't a lecturer account
-  const [legalReturnStage, setLegalReturnStage] = useState("role");
+  const [legalReturnStage, setLegalReturnStage] = useState("splash");
 
   // Try to restore a lecturer session on load (refreshing it, since access
   // tokens expire after ~1hr but refresh tokens last much longer). Silently
@@ -3269,6 +3286,7 @@ export default function SEMAIApp() {
           }}
         />
       )}
+      {stage === "splash" && <SplashScreen onContinue={() => setStage("role")} onOpenLegal={openLegal} />}
       {stage === "auth" && <AuthScreen onAuthenticated={handleAuthenticated} onBack={() => setStage("role")} onOpenLegal={openLegal} />}
       {stage === "privacy" && <PrivacyPolicyScreen onBack={() => setStage(legalReturnStage)} />}
       {stage === "terms" && <TermsScreen onBack={() => setStage(legalReturnStage)} />}
@@ -3535,7 +3553,7 @@ function GlobalStyles() {
       .explain-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; background: #2F6F4F; color: #EDEFF2; font-weight: 600; font-size: 13px; cursor: pointer; }
       .explain-btn:disabled { opacity: 0.6; cursor: not-allowed; }
       .stage-actions .explain-btn { flex: 1; }
-      .complete-banner { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; margin-top: 4px; border-radius: 10px; background: rgba(47,111,79,0.12); border: 1px solid rgba(47,111,79,0.35); font-size: 12.5px; color: #C7CCD4; }
+      .complete-banner { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; margin-top: 4px; border-radius: 10px; background: #1B3328; border: 1px solid rgba(47,111,79,0.55); font-size: 12.5px; color: #C7CCD4; }
       .complete-banner .explain-btn { flex: 0 0 auto; white-space: nowrap; }
       .status-pill { flex: 1; text-align: center; padding: 10px; border-radius: 8px; background: #1A1F27; border: 1px solid #232A34; color: #8B93A1; font-size: 12px; }
       .spin { animation: spin 1s linear infinite; }

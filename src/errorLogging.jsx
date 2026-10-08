@@ -13,7 +13,7 @@
 
 import React from "react";
 
-export const APP_VERSION = "1.1.0";
+export const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
 
 let config = null;
 const seen = new Set();

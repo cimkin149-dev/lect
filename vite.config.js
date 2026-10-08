@@ -1,8 +1,27 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+
+// Build stamp shown on the welcome screen so anyone can tell exactly which
+// version of the app they are looking at (and spot a stale cached copy).
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
+let sha = (process.env.COMMIT_REF || "").slice(0, 7);
+if (!sha) {
+  try {
+    sha = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch (e) {
+    sha = "local";
+  }
+}
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __BUILD_SHA__: JSON.stringify(sha),
+  },
   plugins: [
     react(),
     VitePWA({

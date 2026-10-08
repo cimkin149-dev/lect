@@ -13,6 +13,8 @@
 | 6. Multi-student real-time classrooms | Not started (deliberately gated on a real pilot) |
 | 7. LMS / SSO | Not started (gated on an institutional sandbox) |
 
+v1.2.0 (8 Oct 2026): welcome/splash screen with build stamp; lecture-notes PDF now always reachable (top-bar "Notes (PDF)" button, covers the slides reached; completion banner is sticky). Proxy v6 raised rate limits so notes generation isn't throttled.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

@@ -11,7 +11,7 @@
 // client-side callAI() in the app has one shape to parse regardless of
 // which model is actually answering.
 //
-// Hardening (v5):
+// Hardening (v6; limits raised from 60/15 so multi-slide notes generation is never throttled):
 //  - API key sent in the x-goog-api-key header, not in the URL (URLs end up in logs)
 //  - model allowlist: callers can no longer request an arbitrary/expensive model
 //  - input size cap, and type validation
@@ -34,8 +34,8 @@ const ALLOWED_MODELS = new Set([GEMINI_MODEL_DEFAULT, GEMINI_MODEL_STRONG]);
 
 const MAX_INPUT_CHARS = 400_000; // system + prompt combined
 const WINDOW_MS = 60_000;
-const LIMIT_ALL_PER_WINDOW = 60; // any model
-const LIMIT_STRONG_PER_WINDOW = 15; // the more expensive model
+const LIMIT_ALL_PER_WINDOW = 120; // any model
+const LIMIT_STRONG_PER_WINDOW = 40; // strong model: lecture notes make one call per slide in quick succession
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
