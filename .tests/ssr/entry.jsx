@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import SlideView from "../../src/slideKit/SlideView.jsx";
 import CodePane from "../../src/slideKit/CodePane.jsx";
 import { normalizeSlide } from "../../src/slideKit/schema.js";
+import { extractBlocks } from "../../src/slideKit/focus.js";
 
 let fail = 0;
 const t = (name, cond, extra) => { if (!cond) { fail++; console.log("FAIL", name, extra ?? ""); } else console.log("ok  ", name); };
@@ -45,5 +46,24 @@ const cpJs = renderToStaticMarkup(<CodePane code={"console.log(1)"} language="ja
 t("js code pane has Run button; expected output labelled as not executed", cpJs.includes("▶ Run") && cpJs.includes("not executed"));
 const cpTyped = renderToStaticMarkup(<CodePane code={"public class A {}"} typedCode={"public cl"} typing language="java" filename="A.java" liveTag />);
 t("typing mode shows partial code + cursor", cpTyped.includes("cl") && !cpTyped.includes("class A") && cpTyped.includes("type-cursor") && cpTyped.includes("typing live"));
+// every block the matcher can pick must exist on screen under the same id (and vice versa)
+const idSamples = [
+  { title: "T", bullets: ["one two", "three four"], detail: "A paragraph.", formulas: [{ latex: "x=1", caption: "c" }] },
+  { type: "definition", title: "D", definition: { term: "Algorithm", text: "A finite procedure.", example: "Sorting." }, bullets: ["p"], detail: "d" },
+  { type: "comparison", title: "C", table: { headers: ["A", "B", "C"], rows: [["x", "y", "z"], ["p", "q", "r"]] }, bullets: ["b"], detail: "d" },
+  { type: "summary", title: "S", takeaways: ["t one", "t two"], checkQuestion: { question: "Why?", answer: "Because." }, bullets: [], detail: "d" },
+  { type: "diagram", title: "G", diagram: { code: "flowchart TD\n A-->B", caption: "cap" }, bullets: ["b"], detail: "d" },
+  { type: "plot", title: "P", plot: { kind: "bar", labels: ["a"], series: [{ name: "s", values: [1] }], caption: "bars" }, bullets: ["b"], detail: "d" },
+];
+for (const raw of idSamples) {
+  const sl = normalizeSlide(raw, 0);
+  const html = render(raw, { focusId: "nothing" });
+  const rendered = [...html.matchAll(/data-sk-block="([^"]+)"/g)].map((m) => m[1]);
+  const expected = extractBlocks(sl).map((b) => b.id);
+  t(`block ids match screen for ${sl.type}`, expected.every((id) => rendered.includes(id)), JSON.stringify({ expected, rendered }));
+}
+const fh = render({ title: "F", bullets: ["alpha", "beta"] }, { focusId: "b:1" });
+t("focused block gets sk-focus; slide enters following mode", /<li data-sk-block="b:1" class="sk-focus">/.test(fh) && fh.includes("sk-following") && !/<li data-sk-block="b:0" class="sk-focus">/.test(fh));
+t("no focus -> no following mode", !render({ title: "F", bullets: ["a"] }).includes("sk-following"));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

@@ -101,3 +101,10 @@
 .stage.scrolled .sk-header .slide-eyebrow { margin-bottom: 4px; }
 .stage.scrolled .sk-header h2 { font-size: 21px; margin-bottom: 8px; }
 .room.presentation .stage.scrolled .sk-header h2 { font-size: 30px; margin-bottom: 10px; }
+
+/* "Follow along": the block the lecturer is discussing is highlighted (no layout shift) and the rest recedes slightly */
+.sk-focus { background: rgba(232, 163, 61, 0.10); box-shadow: inset 3px 0 0 #E8A33D; border-radius: 6px; transition: background 0.25s ease, box-shadow 0.25s ease; }
+.sk-slide.sk-following [data-sk-block]:not(.sk-focus) { opacity: 0.74; transition: opacity 0.25s ease; }
+.sk-slide.sk-following li.sk-focus { padding-left: 8px; margin-left: -8px; }
+tr.sk-focus > th, tr.sk-focus > td { background: rgba(232, 163, 61, 0.12); }
+@media (prefers-reduced-motion: reduce) { .sk-focus, .sk-slide.sk-following [data-sk-block]:not(.sk-focus) { transition: none; } }

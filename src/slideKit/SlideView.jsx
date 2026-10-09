@@ -5,23 +5,25 @@ import DiagramView from "./DiagramView.jsx";
 import PlotView from "./PlotView.jsx";
 import { TYPE_LABELS } from "./schema.js";
 
-function Bullets({ items }) {
+const fc = (focusId, id) => (focusId === id ? "sk-focus" : undefined);
+
+function Bullets({ items, focusId }) {
   if (!items || !items.length) return null;
   return (
     <ul>
       {items.map((b, i) => (
-        <li key={i}><Rich text={b} /></li>
+        <li key={i} data-sk-block={`b:${i}`} className={fc(focusId, `b:${i}`)}><Rich text={b} /></li>
       ))}
     </ul>
   );
 }
 
-function Formulas({ formulas }) {
+function Formulas({ formulas, focusId }) {
   if (!formulas || !formulas.length) return null;
   return (
     <div className="sk-formulas">
       {formulas.map((f, i) => (
-        <div className="sk-formula" key={i}>
+        <div className={`sk-formula${focusId === `f:${i}` ? " sk-focus" : ""}`} key={i} data-sk-block={`f:${i}`}>
           <MathBlock latex={f.latex} />
           {f.caption && <div className="sk-caption"><Rich text={f.caption} /></div>}
         </div>
@@ -30,9 +32,9 @@ function Formulas({ formulas }) {
   );
 }
 
-function DefinitionCard({ d }) {
+function DefinitionCard({ d, focusId }) {
   return (
-    <div className="sk-def">
+    <div className={`sk-def${focusId === "def" ? " sk-focus" : ""}`} data-sk-block="def">
       <div className="sk-def-term">{d.term}</div>
       <p className="sk-def-text"><Rich text={d.text} /></p>
       {d.example && (
@@ -42,14 +44,14 @@ function DefinitionCard({ d }) {
   );
 }
 
-function DataTable({ table }) {
+function DataTable({ table, focusId }) {
   return (
     <div className="sk-table-wrap">
       <table className="sk-table">
         <thead><tr>{table.headers.map((h, i) => <th key={i} scope="col"><Rich text={h} /></th>)}</tr></thead>
         <tbody>
           {table.rows.map((r, i) => (
-            <tr key={i}>{r.map((c, j) => (j === 0 ? <th key={j} scope="row"><Rich text={c} /></th> : <td key={j}><Rich text={c} /></td>))}</tr>
+            <tr key={i} data-sk-block={`row:${i}`} className={fc(focusId, `row:${i}`)}>{r.map((c, j) => (j === 0 ? <th key={j} scope="row"><Rich text={c} /></th> : <td key={j}><Rich text={c} /></td>))}</tr>
           ))}
         </tbody>
       </table>
@@ -94,17 +96,17 @@ function WorkedExample({ slide, revealCount }) {
   );
 }
 
-function Summary({ slide }) {
+function Summary({ slide, focusId }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="sk-summary">
       {slide.takeaways && (
         <ul className="sk-takeaways">
-          {slide.takeaways.map((t, i) => <li key={i}><span className="sk-check" aria-hidden="true">✓</span><Rich text={t} /></li>)}
+          {slide.takeaways.map((t, i) => <li key={i} data-sk-block={`t:${i}`} className={fc(focusId, `t:${i}`)}><span className="sk-check" aria-hidden="true">✓</span><Rich text={t} /></li>)}
         </ul>
       )}
       {slide.checkQuestion && (
-        <div className="sk-checkq">
+        <div className={`sk-checkq${focusId === "q" ? " sk-focus" : ""}`} data-sk-block="q">
           <span className="sk-tag">Quick check</span>
           <p><Rich text={slide.checkQuestion.question} /></p>
           {slide.checkQuestion.answer && (open
@@ -116,11 +118,11 @@ function Summary({ slide }) {
   );
 }
 
-export default function SlideView({ slide, unit, index, total, revealCount = Infinity, showWarnings = false, footer = null }) {
+export default function SlideView({ slide, unit, index, total, revealCount = Infinity, showWarnings = false, footer = null, focusId = null }) {
   const t = slide.type;
   const visual = slide.diagram || slide.plot;
   return (
-    <div className={`slide sk-slide sk-type-${t}`}>
+    <div className={`slide sk-slide sk-type-${t}${focusId ? " sk-following" : ""}`}>
       <header className="sk-header">
         <div className="slide-eyebrow">
           <span>{unit}</span>
@@ -129,25 +131,25 @@ export default function SlideView({ slide, unit, index, total, revealCount = Inf
         <h2><Rich text={slide.title} /></h2>
       </header>
 
-      {t === "definition" && slide.definition && <DefinitionCard d={slide.definition} />}
-      {t === "comparison" && slide.table && <DataTable table={slide.table} />}
+      {t === "definition" && slide.definition && <DefinitionCard d={slide.definition} focusId={focusId} />}
+      {t === "comparison" && slide.table && <DataTable table={slide.table} focusId={focusId} />}
       {t === "worked_example" && slide.steps && <WorkedExample slide={slide} revealCount={revealCount} />}
-      {t === "summary" ? <Summary slide={slide} /> : null}
+      {t === "summary" ? <Summary slide={slide} focusId={focusId} /> : null}
 
       {visual && (
         <div className={slide.bullets && slide.bullets.length ? "sk-split" : ""}>
           <div className="sk-visual">
-            {slide.diagram && <DiagramView code={slide.diagram.code} caption={slide.diagram.caption} />}
-            {slide.plot && <PlotView plot={slide.plot} />}
+            {slide.diagram && <div data-sk-block="diagram" className={fc(focusId, "diagram")}><DiagramView code={slide.diagram.code} caption={slide.diagram.caption} /></div>}
+            {slide.plot && <div data-sk-block="plot" className={fc(focusId, "plot")}><PlotView plot={slide.plot} /></div>}
           </div>
-          {slide.bullets && slide.bullets.length > 0 && <div className="sk-side"><Bullets items={slide.bullets} /></div>}
+          {slide.bullets && slide.bullets.length > 0 && <div className="sk-side"><Bullets items={slide.bullets} focusId={focusId} /></div>}
         </div>
       )}
 
-      {!visual && t !== "summary" && <Bullets items={slide.bullets} />}
-      {t === "summary" && <Bullets items={slide.bullets} />}
-      <Formulas formulas={slide.formulas} />
-      {slide.detail && <p className="slide-detail"><Rich text={slide.detail} /></p>}
+      {!visual && t !== "summary" && <Bullets items={slide.bullets} focusId={focusId} />}
+      {t === "summary" && <Bullets items={slide.bullets} focusId={focusId} />}
+      <Formulas formulas={slide.formulas} focusId={focusId} />
+      {slide.detail && <p className={`slide-detail${focusId === "detail" ? " sk-focus" : ""}`} data-sk-block="detail"><Rich text={slide.detail} /></p>}
       {t === "code_walkthrough" && <div className="sk-hint">The code is shown in the editor view.</div>}
       {showWarnings && slide.warnings && slide.warnings.length > 0 && (
         <div className="sk-warnings" role="note">

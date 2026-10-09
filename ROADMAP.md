@@ -34,6 +34,12 @@ question to answer voice) are recorded to the write-only `ai_timings` table (dur
 `supabase/migrations/20261009_ai_timings.sql`). Lecturer dashboard has "AI health and speed": a live Gemini + Groq check and a
 per-session speed table. Proxy v9/10 returns provider/model/serverMs and supports the signed-in-only `{probe:true}` check.
 
+v1.5.1 (9 Oct 2026): **Follow-along scrolling.** Replaced the proportional (and often out-of-sync) auto-scroll. Each spoken sentence is
+matched to the on-screen block it is about (bullet, formula, table row, definition, diagram/plot caption, takeaway) by weighted word
+overlap (`src/slideKit/focus.js`); that block is highlighted and scrolled into the comfortable band below the sticky title, and nothing
+moves when there is no clear match. Worked examples and code walkthroughs keep their exact step/line sync. Manual scrolling still pauses
+following ("Follow the lecturer" resumes). Narration prompts now ask the lecturer to follow the slide's order and wording.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

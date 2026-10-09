@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { PrivacyPolicyScreen, TermsScreen, LegalLinks } from "./legal.jsx";
 import SplashScreen, { VersionTag } from "./SplashScreen.jsx";
 import SlideView from "./slideKit/SlideView.jsx";
@@ -8,7 +8,8 @@ import { generateDeck } from "./slideKit/generate.js";
 import { DEMO_SHOWCASE_SLIDES } from "./slideKit/demoSlides.js";
 import { validateSlide } from "./slideKit/validate.js";
 import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
-import { scrollTargetFor } from "./slideKit/scroll.js";
+import { scrollTopForBlock } from "./slideKit/scroll.js";
+import { extractBlocks, matchSentenceToBlock } from "./slideKit/focus.js";
 import { logTiming, getTimingSummary } from "./telemetry.js";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
@@ -2404,7 +2405,9 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [stepCaption, setStepCaption] = useState("");
   // The slide area scrolls to follow the lecturer; scrolling by hand pauses that.
   const stageRef = useRef(null);
-  const [speakProgress, setSpeakProgress] = useState({ slide: -1, i: 0, n: 1 });
+  const [speakProgress, setSpeakProgress] = useState({ slide: -1, i: 0, n: 1, text: "" });
+  const [focusId, setFocusId] = useState(null); // which on-screen block the lecturer is talking about
+  const lastFocusRef = useRef(null);
   const [userScrolled, setUserScrolled] = useState(false);
   const [stageScrolled, setStageScrolled] = useState(false);
   const typedCodeRef = useRef("");
@@ -2486,28 +2489,49 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
     if (stageRef.current) stageRef.current.scrollTo({ top: 0 });
   }, [slideIndex]);
 
-  // While the lecturer explains, keep the relevant part of a long slide in view.
+  // Which block is being discussed? Each spoken sentence is matched to the bullet / formula /
+  // table row / diagram it is about; if nothing clearly matches, the focus stays where it was.
+  const blocks = useMemo(() => extractBlocks(slide), [slide]);
+  const slideIsScripted = useMemo(() => !!buildStructuredUnits(slide), [slide]);
   useEffect(() => {
-    const el = stageRef.current;
-    if (!el || userScrolled || speakProgress.slide !== slideIndex || !autopilotOn || viewMode !== "slides") return;
-    const live = el.querySelector(".sk-step.current, .sk-final");
-    if (live && reveal.slide === slideIndex && reveal.count > 0) {
-      live.scrollIntoView({ block: "center", behavior: "smooth" });
+    lastFocusRef.current = null;
+    setFocusId(null);
+  }, [slideIndex]);
+  useEffect(() => {
+    if (speakProgress.slide !== slideIndex || !autopilotOn || viewMode !== "slides" || slideIsScripted) {
+      if (speakProgress.slide !== slideIndex || !autopilotOn) setFocusId(null);
       return;
     }
-    const top = scrollTargetFor(speakProgress.i, speakProgress.n, el.scrollHeight, el.clientHeight);
+    const m = matchSentenceToBlock(speakProgress.text, blocks, lastFocusRef.current);
+    if (m) {
+      lastFocusRef.current = m.id;
+      setFocusId(m.id);
+    }
+  }, [speakProgress, blocks, slideIndex, autopilotOn, viewMode, slideIsScripted]);
+
+  // Keep what is being discussed comfortably in view (and only move when it isn't).
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el || userScrolled || !autopilotOn || viewMode !== "slides" || speakProgress.slide !== slideIndex) return;
+    const live = reveal.slide === slideIndex && reveal.count > 0 ? el.querySelector(".sk-step.current, .sk-final") : null;
+    const target = live || (focusId ? el.querySelector(`[data-sk-block="${focusId}"]`) : null);
+    if (!target) return;
+    const sr = el.getBoundingClientRect();
+    const tr = target.getBoundingClientRect();
+    const header = el.querySelector(".sk-header");
+    const top = scrollTopForBlock({
+      blockTop: tr.top - sr.top + el.scrollTop,
+      blockBottom: tr.bottom - sr.top + el.scrollTop,
+      scrollTop: el.scrollTop,
+      viewHeight: el.clientHeight,
+      headerH: header ? header.offsetHeight : 0,
+      scrollHeight: el.scrollHeight,
+    });
     if (top !== null) el.scrollTo({ top, behavior: "smooth" });
-  }, [speakProgress, reveal, slideIndex, userScrolled, autopilotOn, viewMode]);
+  }, [focusId, speakProgress, reveal, slideIndex, userScrolled, autopilotOn, viewMode]);
 
   const stopFollowing = () => setUserScrolled(true);
-  const followLecturer = () => {
-    setUserScrolled(false);
-    const el = stageRef.current;
-    if (el) {
-      const top = scrollTargetFor(speakProgress.i, speakProgress.n, el.scrollHeight, el.clientHeight);
-      if (top !== null) el.scrollTo({ top, behavior: "smooth" });
-    }
-  };
+  const followLecturer = () => setUserScrolled(false); // the effect above scrolls straight back to what's being discussed
   const wordBudget = computeWordBudget(settings.durationMinutes, curriculum.slides.length, settings.pace);
   const toneDesc = (TONE_OPTIONS.find((t) => t.id === settings.tone) || TONE_OPTIONS[0]).desc;
   const lecturerIdentity = `a ${toneDesc} university lecturer teaching ${curriculum.code} — ${curriculum.title}${settings.institution ? ` at ${settings.institution}` : ""}`;
@@ -2697,7 +2721,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const generateExplanation = useCallback(
     async (targetSlide) => {
       const system = `You are ${lecturerIdentity}. You are mid-lecture, speaking out loud to a room of students. Keep this explanation to about ${wordBudget} words. ${NATURAL_SPEECH_STYLE}`;
-      const detailContext = (targetSlide.detail ? ` On-screen supporting text: ${targetSlide.detail}` : "") +
+      const followAlong = " Walk through the on-screen points in the order they appear on the slide, and use the slide's own key words for each point, so students can follow along as you speak.";
+      const detailContext = followAlong + (targetSlide.detail ? ` On-screen supporting text: ${targetSlide.detail}` : "") +
         (targetSlide.diagram || targetSlide.plot || targetSlide.table || targetSlide.definition || targetSlide.formulas
           ? ` Everything the students can see on this slide:\n${slideToPlainContext(targetSlide)}\nTalk them through what is on screen (for a diagram, walk through it step by step; say formulas in words). Never read symbols, LaTeX or code characters out letter by letter.`
           : "");
@@ -2740,7 +2765,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
       while (sentenceIndex < sentences.length) {
         if (!mountedRef.current || !autopilotEnabledRef.current) return;
-        setSpeakProgress({ slide: index, i: sentenceIndex, n: sentences.length });
+        setSpeakProgress({ slide: index, i: sentenceIndex, n: sentences.length, text: sentences[sentenceIndex] });
         if (structuredUnits) {
           const u = structuredUnits[sentenceIndex];
           if (u.reveal !== undefined) setReveal({ slide: index, count: u.reveal });
@@ -2782,6 +2807,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         setTypedCode(targetSlide.code);
       }
       explainedSlides.current.add(index);
+      setSpeakProgress({ slide: -1, i: 0, n: 1, text: "" });
       if (structuredUnits) {
         setReveal({ slide: index, count: Infinity });
         setActiveLines(null);
@@ -3221,6 +3247,7 @@ ${NATURAL_SPEECH_STYLE}`;
                 index={slideIndex}
                 total={curriculum.slides.length}
                 revealCount={progressive ? reveal.count : Infinity}
+                focusId={progressive && !slideIsScripted ? focusId : null}
                 showWarnings={role === "lecturer"}
                 footer={
                   interrupted && lecturerState !== "idle" ? (

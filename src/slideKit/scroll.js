@@ -1,10 +1,16 @@
-// Where should the slide area be scrolled to while the lecturer is on spoken
-// unit `i` of `n`? Progress through the narration maps linearly onto the
-// scrollable distance: the first unit shows the top (title included), the last
-// shows the bottom. Returns null when there is nothing to scroll.
-export function scrollTargetFor(i, n, scrollHeight, clientHeight) {
-  const max = scrollHeight - clientHeight;
-  if (!(max > 4)) return null;
-  const frac = n <= 1 ? 0 : Math.min(1, Math.max(0, i / (n - 1)));
-  return Math.round(frac * max);
+// Decides whether (and where) to scroll so a block that is being discussed stays
+// comfortably in view. Returns the new scrollTop, or null when the block is
+// already well placed or the move would be negligible, so the page doesn't
+// jitter. The sticky title (headerH) is accounted for.
+export function scrollTopForBlock({ blockTop, blockBottom, scrollTop, viewHeight, headerH = 0, scrollHeight }) {
+  const maxScroll = Math.max(0, scrollHeight - viewHeight);
+  if (maxScroll < 4) return null;
+  const safeTop = scrollTop + headerH + viewHeight * 0.04;
+  const safeBottom = scrollTop + viewHeight * 0.82;
+  if (blockTop >= safeTop && blockBottom <= safeBottom) return null; // already comfortably visible
+  const height = blockBottom - blockTop;
+  // Put the block about a fifth of the way down (below the title) so there's context above and what comes next below.
+  let target = height > viewHeight * 0.6 ? blockTop - headerH - 12 : blockTop - headerH - viewHeight * 0.18;
+  target = Math.round(Math.min(maxScroll, Math.max(0, target)));
+  return Math.abs(target - scrollTop) < 8 ? null : target;
 }
