@@ -1,12 +1,13 @@
 // Extracts the real callAI from App.jsx and checks how each proxy response is surfaced.
 import fs from "node:fs";
 const src = fs.readFileSync("src/App.jsx", "utf8");
-const a = src.indexOf("async function callAI(systemPrompt, userPrompt, maxTokens, model) {");
+const a = src.indexOf("// Every AI call is timed (duration only, never the text) so slow spots show up in data.");
 const b = src.indexOf("// ---------------------------------------------------------------------------\n// Post-lecture notes");
-const make = new Function("fetch", "AI_PROXY_URL", "SUPABASE_ANON_KEY", src.slice(a, b) + "; return callAI;");
+const logged = [];
+const make = new Function("fetch", "AI_PROXY_URL", "SUPABASE_ANON_KEY", "logTiming", src.slice(a, b) + "; return callAI;");
 let fail = 0;
 const t = (n, c, e) => { if (!c) { fail++; console.log("FAIL", n, e ?? ""); } else console.log("ok  ", n); };
-const withResponse = (status, body) => make(async () => ({ status, json: async () => body }), "https://x", "k");
+const withResponse = (status, body) => make(async () => ({ status, json: async () => body }), "https://x", "k", (kind, f) => logged.push({ kind, ...f }));
 const err = async (f) => { try { await f(); return null; } catch (e) { return e; } };
 
 let e = await err(() => withResponse(503, { error: "AI provider error (503)" })("s", "p"));
@@ -19,4 +20,11 @@ e = await err(() => withResponse(400, { error: "Model not allowed" })("s", "p"))
 t("400 passes the real message through, not marked busy", e && e.message === "Model not allowed" && !e.busy);
 const ok = await withResponse(200, { content: [{ type: "text", text: "hello" }] })("s", "p");
 t("200 returns text", ok === "hello");
+logged.length = 0;
+await withResponse(200, { content: [{ type: "text", text: "hi" }], provider: "groq", model: "openai/gpt-oss-120b", serverMs: 640 })("s", "p", undefined, undefined, "qa");
+t("success is timed with kind, provider, model and server time", logged.length === 1 && logged[0].kind === "qa" && logged[0].ok === true && logged[0].provider === "groq" && logged[0].model === "openai/gpt-oss-120b" && logged[0].server_ms === 640 && logged[0].client_ms >= 0 && logged[0].chars === 2, JSON.stringify(logged));
+logged.length = 0;
+await err(() => withResponse(503, { error: "x" })("s", "p", undefined, "gemini-3.5-flash", "notes"));
+t("failures are timed too (ok:false, status kept, model recorded)", logged.length === 1 && logged[0].kind === "notes" && logged[0].ok === false && logged[0].status === 503 && logged[0].model === "gemini-3.5-flash", JSON.stringify(logged));
+t("timing never records the prompt or answer text", logged.every((l) => !("prompt" in l) && !("text" in l)));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS"); process.exit(fail ? 1 : 0);

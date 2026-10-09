@@ -11,6 +11,9 @@
 // client-side callAI() in the app has one shape to parse regardless of
 // which model is actually answering.
 //
+// v9: responses carry {provider, model, serverMs} for timing analysis, and a signed-in
+// user can send {"probe": true} to run a tiny live test of Gemini AND Groq (health check).
+//
 // Multi-provider failover (v8): if Gemini is overloaded (5xx), rate limiting us (429)
 // or unreachable, the SAME request is sent to Groq (OpenAI-compatible API, model
 // openai/gpt-oss-120b by default) so a lecture never stops on one provider's bad
@@ -90,6 +93,17 @@ function pruneOldBuckets(now: number) {
   }
 }
 
+// verify_jwt has already checked the signature; we only read the role claim.
+function jwtRole(req: Request): string {
+  try {
+    const tok = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+    const payload = JSON.parse(atob(tok.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return String(payload.role || "");
+  } catch (_e) {
+    return "";
+  }
+}
+
 // ---- Groq (OpenAI-compatible chat completions) ----------------------------------
 async function callGroq(systemText: string, prompt: string, outputTokens: number): Promise<{ ok: boolean; status: number; text?: string }> {
   try {
@@ -137,11 +151,47 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "GEMINI_API_KEY secret is not set. Run: supabase secrets set GEMINI_API_KEY=AIza..." }, 500);
   }
 
+  const t0 = Date.now();
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") {
       return jsonResponse({ error: "Invalid JSON body" }, 400);
     }
+
+    // Health check: signed-in users only (so it can't be used to burn quota anonymously).
+    if ((body as { probe?: unknown }).probe === true) {
+      if (jwtRole(req) !== "authenticated") return jsonResponse({ error: "Sign in to run the AI health check." }, 401);
+      const timed = async (fn: () => Promise<{ ok: boolean; status: number }>) => {
+        const t = Date.now();
+        try {
+          return { ...(await fn()), ms: Date.now() - t };
+        } catch (_e) {
+          return { ok: false, status: 0, ms: Date.now() - t };
+        }
+      };
+      const [gem, groq] = await Promise.all([
+        timed(async () => {
+          const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_DEFAULT}:generateContent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+            body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word: ok" }] }], generationConfig: { maxOutputTokens: 16 } }),
+          });
+          return { ok: r.ok, status: r.status };
+        }),
+        GROQ_API_KEY
+          ? timed(async () => {
+              const g = await callGroq("You are a connectivity test.", "Reply with the single word: ok", 16);
+              return { ok: g.ok, status: g.status };
+            })
+          : Promise.resolve({ ok: false, status: 0, ms: 0 }),
+      ]);
+      return jsonResponse({
+        probe: true,
+        gemini: { model: GEMINI_MODEL_DEFAULT, ...gem },
+        groq: { configured: !!GROQ_API_KEY, model: GROQ_MODEL, ...groq },
+      });
+    }
+
     const { system, prompt, maxTokens, model } = body as {
       system?: unknown; prompt?: unknown; maxTokens?: unknown; model?: unknown;
     };
@@ -211,12 +261,14 @@ Deno.serve(async (req) => {
     const failed = (r: Response | null) => r === null || TRANSIENT.includes(r.status) || r.status === 429;
 
     // Live (default-model) calls must stay snappy, so they retry once quickly; authoring calls are patient.
+    let usedModel = modelId;
     let res = modelId === GEMINI_MODEL_STRONG ? await callGemini(modelId, 3, 2500) : await callGemini(modelId, 2, 700);
     if (failed(res) && modelId === GEMINI_MODEL_STRONG) {
       const fallback = await callGemini(GEMINI_MODEL_DEFAULT, 2, 1200);
       if (fallback && fallback.ok) {
         console.error(`Fell back from ${GEMINI_MODEL_STRONG} to ${GEMINI_MODEL_DEFAULT}`);
         res = fallback;
+        usedModel = GEMINI_MODEL_DEFAULT;
       }
     }
 
@@ -224,7 +276,7 @@ Deno.serve(async (req) => {
       const g = await callGroq(systemText, prompt, outputTokens);
       if (g.ok) {
         console.error(`Fell back to Groq (${GROQ_MODEL}) after Gemini ${res ? res.status : "unreachable"}`);
-        return jsonResponse({ content: [{ type: "text", text: g.text }], provider: "groq" }, 200);
+        return jsonResponse({ content: [{ type: "text", text: g.text }], provider: "groq", model: GROQ_MODEL, serverMs: Date.now() - t0 }, 200);
       }
       if (g.status === 429 && (!res || res.status === 429)) return jsonResponse({ content: [], rateLimited: true }, 429);
     }
@@ -241,7 +293,7 @@ Deno.serve(async (req) => {
 
     const data = await res.json();
     const text = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "";
-    return jsonResponse({ content: [{ type: "text", text }], provider: "gemini" }, 200);
+    return jsonResponse({ content: [{ type: "text", text }], provider: "gemini", model: usedModel, serverMs: Date.now() - t0 }, 200);
   } catch (e) {
     console.error("gemini-proxy failure:", String(e));
     return jsonResponse({ error: "Internal error" }, 500);

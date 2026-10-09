@@ -9,6 +9,7 @@ import { DEMO_SHOWCASE_SLIDES } from "./slideKit/demoSlides.js";
 import { validateSlide } from "./slideKit/validate.js";
 import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
 import { scrollTargetFor } from "./slideKit/scroll.js";
+import { logTiming, getTimingSummary } from "./telemetry.js";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
@@ -590,7 +591,21 @@ const AI_PROXY_URL = "https://rodwpttdegrfwqioyoci.supabase.co/functions/v1/gemi
 // for live, real-time lecture delivery.
 const GEMINI_MODEL_STRONG = "gemini-3.5-flash";
 
-async function callAI(systemPrompt, userPrompt, maxTokens, model) {
+// Every AI call is timed (duration only, never the text) so slow spots show up in data.
+async function callAI(systemPrompt, userPrompt, maxTokens, model, kind = "ai") {
+  const t0 = performance.now();
+  const meta = {};
+  try {
+    const text = await callAIRaw(systemPrompt, userPrompt, maxTokens, model, meta);
+    logTiming(kind, { provider: meta.provider, model: meta.model || model || "default", ok: true, status: meta.status, client_ms: performance.now() - t0, server_ms: meta.serverMs, chars: text.length });
+    return text;
+  } catch (e) {
+    logTiming(kind, { provider: meta.provider, model: model || "default", ok: false, status: meta.status || 0, client_ms: performance.now() - t0, server_ms: meta.serverMs });
+    throw e;
+  }
+}
+
+async function callAIRaw(systemPrompt, userPrompt, maxTokens, model, meta) {
   if (!AI_PROXY_URL) {
     throw new Error("AI_PROXY_URL isn't configured — deploy the Edge Function and set it near the top of App.jsx.");
   }
@@ -605,6 +620,10 @@ async function callAI(systemPrompt, userPrompt, maxTokens, model) {
     body: JSON.stringify({ system: systemPrompt, prompt: userPrompt, ...(maxTokens ? { maxTokens } : {}), ...(model ? { model } : {}) }),
   });
   const data = await response.json();
+  meta.status = response.status;
+  meta.provider = data && data.provider;
+  meta.model = data && data.model;
+  meta.serverMs = data && data.serverMs;
   if (data && data.rateLimited) {
     const err = new Error("The AI is getting too many requests right now. Wait a minute, then try again.");
     err.rateLimited = true;
@@ -658,7 +677,7 @@ Formulas, worked-example steps, tables, code and diagrams are typeset separately
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          explanation = await callAI(system, prompt, 1500, GEMINI_MODEL_STRONG);
+          explanation = await callAI(system, prompt, 1500, GEMINI_MODEL_STRONG, "notes");
           break;
         } catch (e) {
           // free-tier limits are per minute: wait and retry instead of losing this section
@@ -688,7 +707,7 @@ async function generateSessionSummary(curriculum, messages) {
   const system = `You are summarizing a completed AI-led lecture session for the instructor who owns this course, to skim on a dashboard. Write 2-4 concise sentences covering: what was taught, what the student asked about (if anything), and anything notable (e.g. the AI was uncertain about something and flagged it). Plain prose, no markdown, written for a busy instructor, not the student.`;
   const prompt = `Course: ${curriculum.code} — ${curriculum.unit}. Full session transcript:\n${transcript.slice(0, 6000)}`;
   try {
-    return await callAI(system, prompt, 300);
+    return await callAI(system, prompt, 300, undefined, "summary");
   } catch (e) {
     return "";
   }
@@ -1180,7 +1199,7 @@ async function generateCurriculum(rawUnits, settings, onProgress) {
       settings,
       toneDesc: tone.desc,
       allowLiveCode: !!settings.allowLiveCode,
-      callAI,
+      callAI: (sys, pr, mt, md) => callAI(sys, pr, mt, md, "generate"),
       model: GEMINI_MODEL_STRONG,
       computeWordBudget,
       onProgress,
@@ -1222,7 +1241,7 @@ ${rawUnits.map((u, i) => `--- Unit ${i + 1} ---\n${u}`).join("\n\n")}`;
   // exactly the kind of "follow an elaborate content-richness instruction"
   // task where the lite-tier model was under-shooting even explicit asks
   // for more detail.
-  const raw = await callAI(system, user, 16000, GEMINI_MODEL_STRONG);
+  const raw = await callAI(system, user, 16000, GEMINI_MODEL_STRONG, "generate");
   if (!raw) throw new Error("No response from the AI — check your connection and try again.");
   return parseCurriculumJSON(raw);
 }
@@ -1994,6 +2013,92 @@ function AccountDataPanel({ session, kind, onDeleted, onOpenLegal }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// AI health check + speed summary (lecturer dashboard). The check calls the
+// proxy with the lecturer's own sign-in, so it can test Gemini AND the Groq
+// backup with a tiny live request and report how long each takes.
+// ---------------------------------------------------------------------------
+const KIND_LABELS = {
+  qa: "AI answer to a student question", explain: "AI lecture explanation", live: "Other live AI replies", check: "AI 'did that make sense' line",
+  welcome: "AI welcome", notes: "Notes writing (per slide)", generate: "Deck writing (per call)", summary: "Session summary",
+  tts_start: "Voice: time until sound starts", qa_ack_start: "Question → 'Yes, Sam?' starts", qa_dead_air: "Silence after 'Yes, Sam?' before the answer",
+  qa_to_answer_voice: "Question → answer voice starts",
+};
+const secs = (ms) => (ms === null || ms === undefined ? "–" : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`);
+
+function AIHealthPanel({ session }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [summary, setSummary] = useState(() => getTimingSummary());
+
+  const run = async () => {
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await fetch(AI_PROXY_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.accessToken}` },
+        body: JSON.stringify({ probe: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.probe) throw new Error(data.error || `Health check failed (${res.status}). Sign out, sign in again and retry.`);
+      setResult(data);
+    } catch (e) {
+      setError(e.message || "Couldn't run the health check.");
+    }
+    setSummary(getTimingSummary());
+    setBusy(false);
+  };
+
+  const line = (name, r) => {
+    if (r.configured === false) return <li><strong>{name}</strong>: not set up (no <code>GROQ_API_KEY</code> secret yet)</li>;
+    return (
+      <li>
+        <strong>{name}</strong> <span style={{ color: "#8890A0" }}>({r.model})</span>:{" "}
+        {r.ok ? <span style={{ color: "#6FD3A4" }}>working, replied in {secs(r.ms)}</span> : <span style={{ color: "#F2A5A5" }}>not working (status {r.status || "no connection"})</span>}
+      </li>
+    );
+  };
+
+  return (
+    <section className="account-panel" aria-labelledby="ai-health-heading">
+      <h2 id="ai-health-heading" className="account-title">AI health and speed</h2>
+      <p className="account-text">Tests the main AI (Gemini) and the backup (Groq) with a tiny live request, and shows how fast things have been in this browser.</p>
+      <div className="account-actions">
+        <button className="nav-btn" onClick={run} disabled={busy}>
+          {busy ? <Loader2 className="spin" size={13} /> : <CheckCircle2 size={13} />} Run AI health check
+        </button>
+        <button className="nav-btn" onClick={() => setSummary(getTimingSummary())}>Refresh speeds</button>
+      </div>
+      {error && <div className="setup-error" role="alert"><AlertTriangle size={13} /> {error}</div>}
+      {result && (
+        <ul className="account-text" style={{ paddingLeft: 18 }} role="status">
+          {line("Gemini (main)", result.gemini)}
+          {line("Groq (backup)", result.groq)}
+        </ul>
+      )}
+      {summary.length > 0 ? (
+        <div className="sk-table-wrap">
+          <table className="sk-table" style={{ fontSize: 12.5 }}>
+            <thead><tr><th scope="col">What</th><th scope="col">Who</th><th scope="col">Times</th><th scope="col">Typical</th><th scope="col">Slow (95%)</th><th scope="col">Failed</th></tr></thead>
+            <tbody>
+              {summary.map((r) => (
+                <tr key={`${r.kind}|${r.provider}`}>
+                  <th scope="row">{KIND_LABELS[r.kind] || r.kind}</th><td>{r.provider || "–"}</td><td>{r.n}</td><td>{secs(r.p50)}</td><td>{secs(r.p95)}</td><td>{r.failures || 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="account-text">No measurements yet — run a lecture (or the health check) and they'll appear here.</p>
+      )}
+    </section>
+  );
+}
+
 function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState("");
@@ -2126,6 +2231,8 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccoun
           </div>
         ))}
       </div>
+
+      {account && <AIHealthPanel session={account} />}
 
       {account && <AccountDataPanel session={account} kind="lecturer" onDeleted={onAccountDeleted} onOpenLegal={onOpenLegal} />}
     </div>
@@ -2483,7 +2590,15 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   // happened) — callers use that to decide whether to wait for the
   // resulting Q&A to finish before continuing.
   const speakInterruptible = useCallback(
-    async (text, { onDurationKnown } = {}) => {
+    async (text, { onDurationKnown, onStart } = {}) => {
+      const tSpeak = performance.now();
+      let startLogged = false;
+      const markStart = (provider, extra) => {
+        if (startLogged) return;
+        startLogged = true;
+        logTiming("tts_start", { provider, client_ms: performance.now() - tSpeak, chars: text.length, extra });
+        onStart && onStart();
+      };
       interruptedRef.current = false;
       lastSpokenTextRef.current = text;
 
@@ -2506,6 +2621,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
           });
           if (!res.ok) throw new Error(`ElevenLabs request failed (${res.status})`);
           const blob = await res.blob();
+          const fetchMs = Math.round(performance.now() - tSpeak); // the whole sentence is downloaded before playback begins
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
           audioRef.current = audio;
@@ -2515,6 +2631,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
             audio.onloadedmetadata = () => {
               if (isFinite(audio.duration)) onDurationKnown && onDurationKnown(audio.duration * 1000);
             };
+            audio.onplaying = () => markStart("elevenlabs", { fetch_ms: fetchMs });
             audio.onended = () => resolve(true);
             audio.onerror = () => resolve(false);
             // A rejected play() here is almost always the browser's autoplay
@@ -2549,6 +2666,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         const u = new SpeechSynthesisUtterance(text);
         u.rate = 1;
         u.pitch = 1;
+        u.onstart = () => markStart("browser");
         u.onend = () => resolve(true);
         utteranceRef.current = u;
         window.speechSynthesis.speak(u);
@@ -2561,9 +2679,9 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   // so a rate limit or provider error surfaces as a visible notice (and a
   // sensible spoken fallback line) instead of the lecturer just going
   // quiet or saying something generic with no explanation why.
-  const askLecturer = useCallback(async (system, prompt, fallback) => {
+  const askLecturer = useCallback(async (system, prompt, fallback, kind = "live") => {
     try {
-      const text = await callAI(system, prompt);
+      const text = await callAI(system, prompt, undefined, undefined, kind);
       if (text) setAiNotice("");
       return text || fallback;
     } catch (e) {
@@ -2586,7 +2704,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const prompt = targetSlide.hasCode
         ? `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext} You are about to type this code live on screen while you talk: ${targetSlide.code} Narrate it roughly in the order it will be typed, top to bottom, like you're writing it in front of the class.`
         : `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext}`;
-      return askLecturer(system, prompt, "Sorry, I lost my train of thought for a moment — let's continue.");
+      return askLecturer(system, prompt, "Sorry, I lost my train of thought for a moment — let's continue.", "explain");
     },
     [lecturerIdentity, wordBudget, askLecturer]
   );
@@ -2679,7 +2797,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const checkText = await askLecturer(
         checkSystem,
         `You just finished explaining "${targetSlide.title}".`,
-        isLast ? "That's everything for today — nicely done!" : "Does that make sense so far?"
+        isLast ? "That's everything for today — nicely done!" : "Does that make sense so far?",
+        "check"
       );
       if (!mountedRef.current) return;
       const safeCheck = checkText;
@@ -2701,7 +2820,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       Math.round(wordBudget * 0.7)
     )} words. ${NATURAL_SPEECH_STYLE}`;
     const prompt = `Course: ${curriculum.code} — ${curriculum.title}. Today's topics in order: ${curriculum.slides.map((s) => s.title).join(", ")}.`;
-    const text = await askLecturer(system, prompt, `Welcome, ${studentName}! Today we're covering ${curriculum.unit}.`);
+    const text = await askLecturer(system, prompt, `Welcome, ${studentName}! Today we're covering ${curriculum.unit}.`, "welcome");
     if (!mountedRef.current) return;
     const safeText = text;
     addMessage("lecturer", safeText, "explain");
@@ -2784,6 +2903,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
   const handleQuestion = useCallback(
     async (questionText) => {
+      const tQuestion = performance.now();
       addMessage(studentName, questionText, "question");
       if (stateRef.current === "explaining") {
         stopSpeaking();
@@ -2803,7 +2923,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       ];
       const ack = acknowledgments[Math.floor(Math.random() * acknowledgments.length)];
       addMessage("lecturer", ack, "explain");
-      const ackPromise = speakInterruptible(ack);
+      const ackPromise = speakInterruptible(ack, { onStart: () => logTiming("qa_ack_start", { client_ms: performance.now() - tQuestion }) });
 
       const answerBudget = Math.max(45, Math.round(wordBudget * 0.6));
       const fallbackAnswer = "Good question — let me pick that up right after this.";
@@ -2823,10 +2943,11 @@ Write "answer" to be spoken aloud (about ${answerBudget} words). If confidence i
 
 ${NATURAL_SPEECH_STYLE}`;
       const prompt = `You were covering this slide (teaching notes: ${slide.notes}). Everything that was on screen:\n${slideToPlainContext(slide)}\n\nThe student asks: "${questionText}"\nAnswer so it can be spoken aloud: say maths in words, never read LaTeX or code symbols out letter by letter.`;
-      const answerPromise = askLecturer(system, prompt, fallbackAnswer);
+      const answerPromise = askLecturer(system, prompt, fallbackAnswer, "qa");
 
       await ackPromise;
       if (!mountedRef.current) return;
+      const tAckEnd = performance.now();
       const rawAnswer = await answerPromise;
       if (!mountedRef.current) return;
       const { confidence, answer: safeAnswer } = parseAnswerJSON(rawAnswer, fallbackAnswer);
@@ -2836,7 +2957,14 @@ ${NATURAL_SPEECH_STYLE}`;
         flagQuestionForLecturer(courseId, moduleId, studentName, questionText, safeAnswer, slide.title);
       }
       setLecturerState2("answering");
-      await speakInterruptible(safeAnswer);
+      await speakInterruptible(safeAnswer, {
+        onStart: () => {
+          const now = performance.now();
+          // dead air = silence between the end of "Yes, Sam?" and the start of the answer; total = question to answer voice
+          logTiming("qa_dead_air", { client_ms: Math.max(0, now - tAckEnd) });
+          logTiming("qa_to_answer_voice", { client_ms: now - tQuestion });
+        },
+      });
       if (!mountedRef.current) return;
       setLecturerState2("idle");
       setHandRaised(false);

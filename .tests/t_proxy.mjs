@@ -83,6 +83,32 @@ t("healthy Gemini never touches Groq", j.provider === "gemini" && groqCalls.leng
 seen.length = 0; groqCalls.length = 0; script = [() => 503, () => 503, () => 503, () => 503, () => 503]; groqScript = [];
 r = await call({ prompt: "p", model: "gemini-3.5-flash" }); j = await r.json();
 t("authoring call walks strong -> lite -> Groq", r.status === 200 && j.provider === "groq" && seen.length === 5 && seen[3].model === "gemini-3.5-flash-lite");
+// ---- timing metadata + health check
+seen.length = 0; groqCalls.length = 0; script = [() => 200];
+r = await call({ prompt: "p", model: "gemini-3.5-flash" }); j = await r.json();
+t("responses carry provider, model and serverMs", j.provider === "gemini" && j.model === "gemini-3.5-flash" && Number.isFinite(j.serverMs) && j.serverMs >= 0, JSON.stringify(j));
+seen.length = 0; script = [() => 503, () => 503, () => 503, () => 200];
+r = await call({ prompt: "p", model: "gemini-3.5-flash" }); j = await r.json();
+t("fallback to lite reports the model actually used", j.model === "gemini-3.5-flash-lite");
+seen.length = 0; groqCalls.length = 0; script = [() => 503, () => 503]; groqScript = [];
+r = await call({ prompt: "p" }); j = await r.json();
+t("groq answers report groq model", j.provider === "groq" && j.model === "openai/gpt-oss-120b");
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const tok = (role) => `${b64({ alg: "HS256" })}.${b64({ role })}.sig`;
+const callAuth = (body, role) => handler(new Request("http://x", { method: "POST", headers: { "x-forwarded-for": `8.8.8.${++ip}`, authorization: `Bearer ${tok(role)}` }, body: JSON.stringify(body) }));
+seen.length = 0; groqCalls.length = 0; script = []; groqScript = [];
+r = await callAuth({ probe: true }, "anon");
+t("health check refuses anonymous callers (no free quota burning)", r.status === 401 && seen.length === 0 && groqCalls.length === 0);
+r = await call({ probe: true });
+t("health check refuses calls with no token", r.status === 401);
+seen.length = 0; groqCalls.length = 0; script = [() => 200]; groqScript = [{ status: 200, text: "ok" }];
+r = await callAuth({ probe: true }, "authenticated"); j = await r.json();
+t("health check (signed in) tests BOTH providers with timings", r.status === 200 && j.probe === true && j.gemini.ok === true && j.gemini.status === 200 && Number.isFinite(j.gemini.ms) && j.groq.configured === true && j.groq.ok === true && Number.isFinite(j.groq.ms), JSON.stringify(j));
+seen.length = 0; groqCalls.length = 0; script = [() => 503]; groqScript = [{ status: 401 }];
+r = await callAuth({ probe: true }, "authenticated"); j = await r.json();
+t("health check reports failures honestly (Gemini 503, Groq key rejected 401), no retries/fallbacks", j.gemini.ok === false && j.gemini.status === 503 && j.groq.ok === false && j.groq.status === 401 && seen.length === 1 && groqCalls.length === 1, JSON.stringify(j));
+t("health check never leaks keys", !JSON.stringify(j).includes("groq-key") && !JSON.stringify(j).includes("gem-key"));
+
 // Groq key absent -> original behaviour
 ENV = { GEMINI_API_KEY: "gem-key" };
 await import("../.tests/proxy.bundle.mjs?nogroq");

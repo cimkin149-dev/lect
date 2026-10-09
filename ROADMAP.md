@@ -28,6 +28,12 @@ v1.4.0 (9 Oct 2026): **Multi-provider AI failover.** `gemini-proxy` v8 retries G
 to the lighter Gemini model, then to Groq (`openai/gpt-oss-120b`) on 5xx, 429 or network failure. Needs the optional secret
 `GROQ_API_KEY`; without it behaviour is unchanged. The key lives only in Supabase secrets, never in the repo.
 
+v1.5.0 (9 Oct 2026): **Timing measurements.** Every AI call (kind, provider, model, ok, status, client and server ms), the voice start
+delay (browser vs ElevenLabs, with download time), and the live Q&A stages (question to "Yes, Sam?", silence before the answer,
+question to answer voice) are recorded to the write-only `ai_timings` table (durations only; summary SQL in
+`supabase/migrations/20261009_ai_timings.sql`). Lecturer dashboard has "AI health and speed": a live Gemini + Groq check and a
+per-session speed table. Proxy v9/10 returns provider/model/serverMs and supports the signed-in-only `{probe:true}` check.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 
