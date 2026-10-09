@@ -79,6 +79,7 @@ export function PrivacyPolicyScreen({ onBack }) {
       <ul>
         <li style={li}><strong>Supabase</strong>: database, sign-in and server functions. Our project is hosted in the EU West (Ireland) region.</li>
         <li style={li}><strong>Google (Gemini AI)</strong>: lecture material and slide text, and student questions with the surrounding context, are sent to Google's Gemini service to generate slides, spoken explanations, answers, notes and summaries. This happens through our server function so our AI key is never exposed.</li>
+        <li style={li}><strong>Groq (backup AI provider)</strong>: only when Google's service is unavailable or over capacity, the same lecture material or student question may be sent to Groq instead, to produce the answer, so that a lecture is not interrupted. Groq's servers are in the United States.</li>
         <li style={li}><strong>ElevenLabs</strong> (only if a lecturer turns it on): the text of what the lecturer voice says is sent from your browser to ElevenLabs to produce speech.</li>
         <li style={li}><strong>Your browser's speech features</strong>: if you use the microphone to ask a question, speech recognition is performed by your browser, and depending on the browser (for example Chrome) your audio may be sent to that browser vendor's service. We do not receive or store your audio.</li>
         <li style={li}><strong>Hosting and fonts</strong>: the app is delivered by our hosting provider (currently Netlify) and loads fonts from Google Fonts, which can see your IP address when fonts load.</li>

@@ -24,6 +24,10 @@ multi-language highlighter (Java, C, C++, Python, JS/TS, VB, SQL, HTML/CSS); in-
 need an execution service — not built; their expected output is AI-written and labelled as such). Notes PDF includes
 formulas, steps, tables, diagrams, graphs and numbered code. Run the tests with `npm test`.
 
+v1.4.0 (9 Oct 2026): **Multi-provider AI failover.** `gemini-proxy` v8 retries Gemini briefly, then (for authoring calls) falls back
+to the lighter Gemini model, then to Groq (`openai/gpt-oss-120b`) on 5xx, 429 or network failure. Needs the optional secret
+`GROQ_API_KEY`; without it behaviour is unchanged. The key lives only in Supabase secrets, never in the repo.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 
