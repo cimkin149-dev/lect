@@ -605,8 +605,14 @@ async function callAI(systemPrompt, userPrompt, maxTokens, model) {
   });
   const data = await response.json();
   if (data && data.rateLimited) {
-    const err = new Error("AI provider is rate-limited right now.");
+    const err = new Error("The AI is getting too many requests right now. Wait a minute, then try again.");
     err.rateLimited = true;
+    throw err;
+  }
+  if ([500, 502, 503, 504].includes(response.status)) {
+    // Google's AI service has short "high demand" spikes; say so plainly and mark it retryable.
+    const err = new Error("The AI service is very busy right now (this is on Google's side, not your setup). Wait a minute and try again. Your text is still here.");
+    err.busy = true;
     throw err;
   }
   if (response.status >= 400) {
@@ -655,7 +661,7 @@ Formulas, worked-example steps, tables, code and diagrams are typeset separately
           break;
         } catch (e) {
           // free-tier limits are per minute: wait and retry instead of losing this section
-          if (!e.rateLimited || attempt === 2) throw e;
+          if (!(e.rateLimited || e.busy) || attempt === 2) throw e;
           onProgress && onProgress(`The AI is busy — retrying "${slide.title}" in a few seconds…`);
           await new Promise((r) => setTimeout(r, attempt === 0 ? 5000 : 12000));
         }
@@ -1183,7 +1189,18 @@ async function generateCurriculum(rawUnits, settings, onProgress) {
     return deck;
   } catch (e) {
     onProgress && onProgress("Using the standard generator…");
-    const legacy = await legacyGenerateCurriculum(rawUnits, settings);
+    let legacy;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        legacy = await legacyGenerateCurriculum(rawUnits, settings);
+        break;
+      } catch (err) {
+        // a busy AI service usually recovers within a minute: wait and retry before giving up
+        if (!(err.busy || err.rateLimited) || attempt === 2) throw err;
+        onProgress && onProgress("The AI is busy — trying again in a few seconds…");
+        await new Promise((r) => setTimeout(r, attempt === 0 ? 8000 : 20000));
+      }
+    }
     return { ...legacy, slides: legacy.slides.map((sl, i) => normalizeSlide(sl, i)) };
   }
 }

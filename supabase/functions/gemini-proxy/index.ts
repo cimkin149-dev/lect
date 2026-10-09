@@ -11,7 +11,7 @@
 // client-side callAI() in the app has one shape to parse regardless of
 // which model is actually answering.
 //
-// Hardening (v6; limits raised from 60/15 so multi-slide notes generation is never throttled):
+// Hardening (v7: retries Google 5xx "high demand" errors and falls back from the strong to the default model; v6 raised limits so multi-slide notes generation is never throttled):
 //  - API key sent in the x-goog-api-key header, not in the URL (URLs end up in logs)
 //  - model allowlist: callers can no longer request an arbitrary/expensive model
 //  - input size cap, and type validation
@@ -132,16 +132,39 @@ Deno.serve(async (req) => {
     // a sane upper bound for our use cases, not the model's real limit.
     const outputTokens = Math.max(200, Math.min(16000, Number(maxTokens) || 1000));
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        systemInstruction: { parts: [{ text: systemText }] },
-        generationConfig: { maxOutputTokens: outputTokens },
-      }),
+    const bodyJson = JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: systemText }] },
+      generationConfig: { maxOutputTokens: outputTokens },
     });
+
+    // Google answers 503 "high demand" in short spikes. Retry a couple of times
+    // with a growing pause; if the strong model is still busy, fall back once to
+    // the default model so the caller gets an answer instead of an error.
+    const TRANSIENT = [500, 502, 503, 504];
+    const callGemini = async (id: string): Promise<Response> => {
+      let r: Response | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) await new Promise((resolve) => setTimeout(resolve, attempt * 2500));
+        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${id}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+          body: bodyJson,
+        });
+        if (!TRANSIENT.includes(r.status)) return r;
+        console.error(`Gemini ${id} transient ${r.status} (attempt ${attempt + 1}/3)`);
+      }
+      return r as Response;
+    };
+
+    let res = await callGemini(modelId);
+    if (TRANSIENT.includes(res.status) && modelId === GEMINI_MODEL_STRONG) {
+      const fallback = await callGemini(GEMINI_MODEL_DEFAULT);
+      if (fallback.ok) {
+        console.error(`Fell back from ${GEMINI_MODEL_STRONG} to ${GEMINI_MODEL_DEFAULT}`);
+        res = fallback;
+      }
+    }
 
     if (res.status === 429) {
       return jsonResponse({ content: [], rateLimited: true }, 429);
