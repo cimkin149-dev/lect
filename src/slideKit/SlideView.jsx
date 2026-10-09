@@ -121,11 +121,13 @@ export default function SlideView({ slide, unit, index, total, revealCount = Inf
   const visual = slide.diagram || slide.plot;
   return (
     <div className={`slide sk-slide sk-type-${t}`}>
-      <div className="slide-eyebrow">
-        <span>{unit}</span>
-        <span>{t !== "concept" && <span className="sk-type-chip">{TYPE_LABELS[t]}</span>} {index + 1} / {total}</span>
-      </div>
-      <h2><Rich text={slide.title} /></h2>
+      <header className="sk-header">
+        <div className="slide-eyebrow">
+          <span>{unit}</span>
+          <span>{t !== "concept" && <span className="sk-type-chip">{TYPE_LABELS[t]}</span>} {index + 1} / {total}</span>
+        </div>
+        <h2><Rich text={slide.title} /></h2>
+      </header>
 
       {t === "definition" && slide.definition && <DefinitionCard d={slide.definition} />}
       {t === "comparison" && slide.table && <DataTable table={slide.table} />}

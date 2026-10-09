@@ -1,0 +1,10 @@
+import { scrollTargetFor } from "../src/slideKit/scroll.js";
+let fail = 0;
+const t = (n, c, e) => { if (!c) { fail++; console.log("FAIL", n, e ?? ""); } else console.log("ok  ", n); };
+t("first unit -> top (title visible)", scrollTargetFor(0, 6, 1500, 500) === 0);
+t("last unit -> bottom", scrollTargetFor(5, 6, 1500, 500) === 1000);
+t("middle -> proportional", scrollTargetFor(2, 6, 1500, 500) === 400, scrollTargetFor(2, 6, 1500, 500));
+t("slide fits on screen -> nothing to scroll", scrollTargetFor(3, 6, 480, 500) === null && scrollTargetFor(3, 6, 502, 500) === null);
+t("single unit stays at top", scrollTargetFor(0, 1, 2000, 500) === 0);
+t("out-of-range indexes clamped", scrollTargetFor(99, 4, 1000, 400) === 600 && scrollTargetFor(-3, 4, 1000, 400) === 0);
+console.log(fail ? `\n${fail} FAILED` : "\nALL PASS"); process.exit(fail ? 1 : 0);

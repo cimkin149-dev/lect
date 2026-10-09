@@ -8,6 +8,7 @@ import { generateDeck } from "./slideKit/generate.js";
 import { DEMO_SHOWCASE_SLIDES } from "./slideKit/demoSlides.js";
 import { validateSlide } from "./slideKit/validate.js";
 import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
+import { scrollTargetFor } from "./slideKit/scroll.js";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
@@ -2294,6 +2295,11 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [reveal, setReveal] = useState({ slide: -1, count: Infinity });
   const [activeLines, setActiveLines] = useState(null);
   const [stepCaption, setStepCaption] = useState("");
+  // The slide area scrolls to follow the lecturer; scrolling by hand pauses that.
+  const stageRef = useRef(null);
+  const [speakProgress, setSpeakProgress] = useState({ slide: -1, i: 0, n: 1 });
+  const [userScrolled, setUserScrolled] = useState(false);
+  const [stageScrolled, setStageScrolled] = useState(false);
   const typedCodeRef = useRef("");
   useEffect(() => {
     typedCodeRef.current = typedCode;
@@ -2366,6 +2372,35 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const slide = curriculum.slides[Math.min(slideIndex, curriculum.slides.length - 1)];
   // Progressive reveal only applies while the lecturer is actively teaching this slide
   const progressive = autopilotOn && reveal.slide === slideIndex;
+
+  // New slide: back to the top (title visible) and follow the lecturer again.
+  useEffect(() => {
+    setUserScrolled(false);
+    if (stageRef.current) stageRef.current.scrollTo({ top: 0 });
+  }, [slideIndex]);
+
+  // While the lecturer explains, keep the relevant part of a long slide in view.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el || userScrolled || speakProgress.slide !== slideIndex || !autopilotOn || viewMode !== "slides") return;
+    const live = el.querySelector(".sk-step.current, .sk-final");
+    if (live && reveal.slide === slideIndex && reveal.count > 0) {
+      live.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    const top = scrollTargetFor(speakProgress.i, speakProgress.n, el.scrollHeight, el.clientHeight);
+    if (top !== null) el.scrollTo({ top, behavior: "smooth" });
+  }, [speakProgress, reveal, slideIndex, userScrolled, autopilotOn, viewMode]);
+
+  const stopFollowing = () => setUserScrolled(true);
+  const followLecturer = () => {
+    setUserScrolled(false);
+    const el = stageRef.current;
+    if (el) {
+      const top = scrollTargetFor(speakProgress.i, speakProgress.n, el.scrollHeight, el.clientHeight);
+      if (top !== null) el.scrollTo({ top, behavior: "smooth" });
+    }
+  };
   const wordBudget = computeWordBudget(settings.durationMinutes, curriculum.slides.length, settings.pace);
   const toneDesc = (TONE_OPTIONS.find((t) => t.id === settings.tone) || TONE_OPTIONS[0]).desc;
   const lecturerIdentity = `a ${toneDesc} university lecturer teaching ${curriculum.code} — ${curriculum.title}${settings.institution ? ` at ${settings.institution}` : ""}`;
@@ -2587,6 +2622,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
       while (sentenceIndex < sentences.length) {
         if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        setSpeakProgress({ slide: index, i: sentenceIndex, n: sentences.length });
         if (structuredUnits) {
           const u = structuredUnits[sentenceIndex];
           if (u.reveal !== undefined) setReveal({ slide: index, count: u.reveal });
@@ -3039,7 +3075,17 @@ ${NATURAL_SPEECH_STYLE}`;
             </button>
           </div>
 
-          <div className="stage">
+          <div
+            className={`stage${stageScrolled ? " scrolled" : ""}`}
+            ref={stageRef}
+            onScroll={(e) => setStageScrolled(e.currentTarget.scrollTop > 8)}
+            onWheel={stopFollowing}
+            onTouchMove={stopFollowing}
+            onKeyDown={(e) => { if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) stopFollowing(); }}
+            tabIndex={0}
+            role="region"
+            aria-label="Lecture slide"
+          >
             {viewMode === "slides" ? (
               <SlideView
                 slide={slide}
@@ -3072,6 +3118,9 @@ ${NATURAL_SPEECH_STYLE}`;
                   />
                 )}
               </div>
+            )}
+            {viewMode === "slides" && userScrolled && autopilotOn && speakProgress.slide === slideIndex && lecturerState !== "idle" && (
+              <button className="follow-pill" onClick={followLecturer}>↧ Follow the lecturer</button>
             )}
           </div>
 
@@ -3646,7 +3695,11 @@ function GlobalStyles() {
       .stage-switch button.active { background: #232A34; color: #EDEFF2; border-color: #37404D; }
       .stage-switch button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-      .stage { flex: 1 1 auto; background: #1E2530; border: 1px solid #232A34; border-radius: 14px; padding: 36px 44px; overflow-y: auto; min-height: 0; transition: padding 0.25s ease; display: flex; flex-direction: column; justify-content: center; }
+      .stage { flex: 1 1 auto; background: #1E2530; border: 1px solid #232A34; border-radius: 14px; padding: 36px 44px; overflow-y: auto; min-height: 0; transition: padding 0.25s ease; display: flex; flex-direction: column; scroll-behavior: auto; }
+      /* Safe centering: auto margins centre a short slide, but collapse to 0 when the slide is taller than the stage, so the TOP is always reachable (justify-content:center cut it off). */
+      .stage > .slide, .stage > .ide { margin-block: auto; }
+      .stage:focus-visible { outline: 2px solid #E8A33D; outline-offset: -2px; }
+      .follow-pill { position: sticky; bottom: 4px; align-self: center; flex: 0 0 auto; background: #E8A33D; color: #1B1408; border: none; border-radius: 999px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; box-shadow: 0 6px 18px rgba(0,0,0,0.45); z-index: 6; }
       .slide-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #E8A33D; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; display: flex; justify-content: space-between; }
       .slide h2 { font-family: 'Space Grotesk', sans-serif; font-size: 30px; margin: 0 0 22px; line-height: 1.25; transition: font-size 0.25s ease; }
       .slide ul { margin: 0; padding-left: 22px; color: #C7CCD4; line-height: 2; font-size: 16px; transition: font-size 0.25s ease; }
@@ -3660,7 +3713,7 @@ function GlobalStyles() {
          reopened independently via the controlbar without leaving it. */
       .room.presentation .tiles { display: none; }
       .room.presentation .main-col { padding: 22px 48px; }
-      .room.presentation .stage { padding: 64px 90px; }
+      .room.presentation .stage { padding: 44px 90px 56px; }
       .room.presentation .slide-eyebrow { font-size: 13px; }
       .room.presentation .slide h2 { font-size: 46px; margin-bottom: 32px; }
       .room.presentation .slide ul { font-size: 22px; line-height: 2.15; }

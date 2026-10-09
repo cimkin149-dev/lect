@@ -8,6 +8,8 @@ let fail = 0;
 const t = (name, cond, extra) => { if (!cond) { fail++; console.log("FAIL", name, extra ?? ""); } else console.log("ok  ", name); };
 const render = (raw, props = {}) => renderToStaticMarkup(<SlideView slide={normalizeSlide(raw, 0)} unit="U" index={0} total={5} {...props} />);
 
+const headerHtml = render({ title: "Hdr", bullets: ["b"] });
+t("title + eyebrow live in a sticky header so they stay visible while scrolling", headerHtml.includes('<header class="sk-header"') && headerHtml.indexOf("Hdr") < headerHtml.indexOf("</header>"));
 const old = render({ title: "Old slide", bullets: ["Plain bullet", "Math $x^2$ here"], detail: "Costs $5 and $10.", notes: "n", hasCode: false });
 t("old slide renders bullets, inline math, currency untouched", old.includes("Plain bullet") && old.includes("katex") && old.includes("Costs $5 and $10."));
 

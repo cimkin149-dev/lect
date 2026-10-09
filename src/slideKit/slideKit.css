@@ -93,3 +93,11 @@
 .sk-edit-field select { background: #161B22; color: #EDEFF2; border: 1px solid #2A313C; border-radius: 8px; padding: 7px 8px; font-family: inherit; }
 .sk-edit-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .sk-edit-note { font-size: 12px; color: #8FD3AE; }
+
+/* Sticky slide header: the title stays visible while a long slide scrolls */
+.sk-header { position: sticky; top: 0; z-index: 5; background: #1E2530; margin: 0 -2px 4px; padding: 2px 2px 6px; transition: box-shadow 0.2s ease; }
+.sk-header h2 { transition: font-size 0.2s ease, margin 0.2s ease; }
+.stage.scrolled .sk-header { box-shadow: 0 12px 14px -12px rgba(0, 0, 0, 0.7); border-bottom: 1px solid #2A313C; }
+.stage.scrolled .sk-header .slide-eyebrow { margin-bottom: 4px; }
+.stage.scrolled .sk-header h2 { font-size: 21px; margin-bottom: 8px; }
+.room.presentation .stage.scrolled .sk-header h2 { font-size: 30px; margin-bottom: 10px; }
