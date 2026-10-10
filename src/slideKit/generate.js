@@ -60,6 +60,8 @@ Global rules:
 - Tone: ${toneDesc}. Keep total narration for this slide near ${wordBudget} words.
 - Fields every slide has: "type", "title", "bullets" (string[]), "detail" (string), "notes" (string: guidance to the lecturer for narrating this slide: what to emphasise, a common misconception to address; also say to keep the narration to about ${wordBudget} words).
 - Optional on ANY slide: "formulas": [{ "latex": string, "caption": string }] for the key equations shown prominently.
+- "concepts": 1-3 short names (2-4 words, lower case) of the ideas this slide teaches, and "prerequisites": 0-3 names of earlier concepts or common prior knowledge it relies on. Concept names are used to track each student's mastery over time, so reuse EXACTLY the same name whenever the same concept appears on several slides.
+- "check": ONE multiple-choice question that tests the slide's main idea (omit it on summary slides): { "question": string (may use inline $math$), "options": exactly 4 short strings, "answer": number (0-based index of the single correct option; vary its position, do not always use 0), "explanation": string (SPOKEN aloud after the student answers: 1-2 sentences on why the answer is right and what the most tempting wrong option gets wrong; no LaTeX), "concept": string (one of this slide's concepts) }. Wrong options must be plausible, each reflecting a real misconception, never silly. Test understanding, not recall of exact wording, and make sure it can be answered from this slide's content. Double-check that the marked answer is truly correct.
 ${allowLiveCode ? "" : "- Do NOT include any code: this lecturer has turned off live code demos.\n"}`;
 
 const TYPE_SPECS = {
@@ -84,7 +86,7 @@ const TYPE_SPECS = {
  "bullets" = 3-5 short points narrating the diagram. "detail" = 2-4 sentences. "notes" must tell the lecturer to walk through the diagram in order.`,
   plot: `Type "plot": "plot" is EITHER { "kind": "function", "expressions": [{ "expr": string, "label": string }] (1-3, variable x, syntax like x^2, sin(x), sqrt(x), exp(x), log(x), abs(x), pi), "xMin": number, "xMax": number, "yMin": number (optional), "yMax": number (optional), "caption": string } OR { "kind": "bar" | "line", "labels": string[], "series": [{ "name": string, "values": number[] }], "caption": string }.
  "bullets" = 3-5 points on what to notice. "detail" = 2-4 sentences.`,
-  summary: `Type "summary": "takeaways" = 4-7 crisp sentences students should remember; "checkQuestion": { "question": string, "answer": string } a quick question testing the main idea; "bullets": [] is fine; "detail" = 2 sentences on what comes next or how to practise.`,
+  summary: `Type "summary": "takeaways" = 4-7 crisp sentences students should remember (no "check" field on this slide); "checkQuestion": { "question": string, "answer": string } a quick question testing the main idea; "bullets": [] is fine; "detail" = 2 sentences on what comes next or how to practise.`,
 };
 
 export function buildSlideSystemPrompt(type, { toneDesc, wordBudget, allowLiveCode }) {

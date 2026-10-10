@@ -2,6 +2,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import SlideView from "../../src/slideKit/SlideView.jsx";
 import CodePane from "../../src/slideKit/CodePane.jsx";
+import CheckCard from "../../src/slideKit/CheckCard.jsx";
+import { newCheckState, chooseOption, finishCheck } from "../../src/slideKit/checkFlow.js";
 import { normalizeSlide } from "../../src/slideKit/schema.js";
 import { extractBlocks } from "../../src/slideKit/focus.js";
 
@@ -65,5 +67,16 @@ for (const raw of idSamples) {
 const fh = render({ title: "F", bullets: ["alpha", "beta"] }, { focusId: "b:1" });
 t("focused block gets sk-focus; slide enters following mode", /<li data-sk-block="b:1" class="sk-focus">/.test(fh) && fh.includes("sk-following") && !/<li data-sk-block="b:0" class="sk-focus">/.test(fh));
 t("no focus -> no following mode", !render({ title: "F", bullets: ["a"] }).includes("sk-following"));
+const chk = { question: "What is $3^{2}$?", options: ["6", "9", "5", "8"], answer: 1, explanation: "Nine.", concept: "powers" };
+const noop = () => {};
+let cs = newCheckState(0, chk, 0);
+let ch = renderToStaticMarkup(<CheckCard state={cs} onChoose={noop} onConfidence={noop} onSkip={noop} />);
+t("check card: question with maths, 4 lettered options, skip link", ch.includes("katex") && (ch.match(/class="check-option[ "]/g) || []).length === 4 && ch.includes(">A<") && ch.includes(">D<") && ch.includes("Skip this question") && !ch.includes("How sure"));
+cs = chooseOption(cs, 0, 100);
+ch = renderToStaticMarkup(<CheckCard state={cs} onChoose={noop} onConfidence={noop} onSkip={noop} />);
+t("after choosing: options locked, confidence chips offered, answer not yet revealed", ch.includes("How sure are you?") && ch.includes("Very sure") && !ch.includes("correct answer") && (ch.match(/disabled/g) || []).length >= 4);
+cs = finishCheck(cs, "sure").state;
+ch = renderToStaticMarkup(<CheckCard state={cs} onChoose={noop} onConfidence={noop} onSkip={noop} />);
+t("feedback: correct option ticked, wrong choice marked, explanation shown", ch.includes("check-option chosen wrong") && ch.includes("correct answer") && ch.includes("Not quite.") && ch.includes("Nine."));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

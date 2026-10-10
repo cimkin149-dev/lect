@@ -66,5 +66,7 @@ const callAI3 = async (system, prompt) => {
 };
 const deck3 = await generateDeck({ rawUnits: ["x"], settings: { durationMinutes: 10 }, toneDesc: "t", allowLiveCode: true, callAI: callAI3, model: "m", computeWordBudget: () => 100, deps: { sleep: async (ms) => { waits.push(ms); } } });
 t("rate-limited outline + slide recover after backoff", deck3.slides[0].bullets[0] === "real content" && !deck3.slides[0].warnings && waits.length >= 3, JSON.stringify({ waits, s: deck3.slides[0] }));
+t("slide prompt asks for concepts + one multiple-choice check with plausible distractors", /"concepts": 1-3 short names/.test(buildSlideSystemPrompt("concept", { toneDesc: "x", wordBudget: 1, allowLiveCode: true })) && /"check": ONE multiple-choice question/.test(buildSlideSystemPrompt("concept", { toneDesc: "x", wordBudget: 1, allowLiveCode: true })) && /plausible/.test(buildSlideSystemPrompt("concept", { toneDesc: "x", wordBudget: 1, allowLiveCode: true })));
+t("summary slides are told not to carry a check", /no "check" field on this slide/.test(buildSlideSystemPrompt("summary", { toneDesc: "x", wordBudget: 1, allowLiveCode: true })));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

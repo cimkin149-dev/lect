@@ -63,6 +63,28 @@ function normalizePlot(p) {
   return null;
 }
 
+// One multiple-choice comprehension check. Invalid checks (bad answer index, duplicate or too few options)
+// are dropped rather than shown, because a wrong "correct answer" would teach students the wrong thing.
+function normalizeCheck(c, fallbackConcept) {
+  if (!c || typeof c !== "object") return null;
+  const question = text(c.question);
+  const rawOptions = arr(c.options).map(text);
+  const rawAnswer = c.answer === null || c.answer === "" || c.answer === undefined ? NaN : +c.answer;
+  if (!question || !Number.isInteger(rawAnswer) || rawAnswer < 0 || rawAnswer >= rawOptions.length || !rawOptions[rawAnswer]) return null;
+  const correctText = rawOptions[rawAnswer];
+  // drop empty and duplicate options, then find the correct option again by its text so the index can't drift
+  const seen = new Set();
+  const options = rawOptions.filter((o) => {
+    const k = o.toLowerCase();
+    if (!o || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).slice(0, 5);
+  const answer = options.findIndex((o) => o.toLowerCase() === correctText.toLowerCase());
+  if (options.length < 3 || answer < 0) return null;
+  return { question, options, answer, explanation: text(c.explanation), concept: text(c.concept) || fallbackConcept || "" };
+}
+
 export function normalizeSlide(raw, index = 0) {
   const r = raw && typeof raw === "object" ? raw : {};
   const bullets = arr(r.bullets).map(text).filter(Boolean);
@@ -131,6 +153,11 @@ export function normalizeSlide(raw, index = 0) {
   }
   set("takeaways", arr(r.takeaways).map(text).filter(Boolean));
   if (dq && (typeof dq === "string" ? dq : dq.question)) slide.checkQuestion = { question: text(typeof dq === "string" ? dq : dq.question), answer: text(dq && dq.answer) };
+  const concepts = arr(r.concepts).map(text).filter(Boolean).slice(0, 3);
+  set("concepts", concepts);
+  set("prerequisites", arr(r.prerequisites).map(text).filter(Boolean).slice(0, 3));
+  const rawChecks = Array.isArray(r.checks) ? r.checks : r.check ? [r.check] : [];
+  set("checks", rawChecks.map((c) => normalizeCheck(c, concepts[0])).filter(Boolean).slice(0, 2));
   set("warnings", arr(r.warnings).map(str).filter(Boolean));
   return slide;
 }
@@ -154,5 +181,6 @@ export function slideToPlainContext(s) {
   if (s.codeSteps) s.codeSteps.forEach((c, i) => lines.push(`Code step ${i + 1} (lines ${c.lines[0]}-${c.lines[1]}): ${c.say}`));
   if (s.expectedOutput) lines.push("Expected output:\n" + s.expectedOutput);
   if (s.takeaways) lines.push("Takeaways: " + s.takeaways.join("; "));
+  if (s.concepts) lines.push("Concepts taught: " + s.concepts.join(", "));
   return lines.join("\n");
 }

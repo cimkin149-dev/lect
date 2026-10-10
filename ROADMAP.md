@@ -40,6 +40,18 @@ overlap (`src/slideKit/focus.js`); that block is highlighted and scrolled into t
 moves when there is no clear match. Worked examples and code walkthroughs keep their exact step/line sync. Manual scrolling still pauses
 following ("Follow the lecturer" resumes). Narration prompts now ask the lecturer to follow the slide's order and wording.
 
+v1.6.0 (10 Oct 2026): **Learning analytics, Phase A (foundations).** Append-only `learning_events` log (slide views + dwell, navigation,
+autopilot toggles, hand raises, questions with the on-screen block they concerned, AI answer confidence, flags, "Got it / Unsure / I'm lost"
+signals, comprehension-check shown/answered/skipped, notes downloads, session start/end) with strict row-level security (verified by 16
+database tests: anonymous students can write but never read; lecturers read only their own courses; students read their own; nothing is
+editable). De-identified by design: no names/emails, a random browser pseudonym + optional account id. Every generated slide now carries
+`concepts`, `prerequisites` and one multiple-choice `check` (distractors reflect misconceptions; invalid checks are dropped, never shown);
+the lecturer asks it after the slide, records the answer, time and self-rated confidence, and speaks the explanation. "I'm lost" re-explains
+immediately. Optional research-consent checkbox on joining (stored on the session + every event). Lecturer **Slide analytics** panel
+(`module_slide_stats`): per-slide viewers, dwell, quiz accuracy, signals, questions, and a "needs attention" score that stays blank until
+enough students have data. Privacy policy updated. Next: Phase B (misconception grouping, flagged-question review, suggestions), Phase C
+(student mastery model + adaptive lecturing), Phase D (research exports/experiments), Phase E (pilot evaluation).
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

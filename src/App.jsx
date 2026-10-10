@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { PrivacyPolicyScreen, TermsScreen, LegalLinks } from "./legal.jsx";
 import SplashScreen, { VersionTag } from "./SplashScreen.jsx";
 import SlideView from "./slideKit/SlideView.jsx";
+import { Rich } from "./slideKit/MathText.jsx";
 import CodePane from "./slideKit/CodePane.jsx";
 import { normalizeSlide, slideToPlainContext, TYPE_LABELS, LANGUAGE_LABELS } from "./slideKit/schema.js";
 import { generateDeck } from "./slideKit/generate.js";
@@ -11,6 +12,10 @@ import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
 import { scrollTopForBlock } from "./slideKit/scroll.js";
 import { extractBlocks, matchSentenceToBlock } from "./slideKit/focus.js";
 import { logTiming, getTimingSummary } from "./telemetry.js";
+import { startTracking, track, flushEvents, stopTracking, getStudentKey, slideKeyFor } from "./analytics.js";
+import { attentionScore, heatLevel, whyFlagged, formatDwell } from "./slideKit/insights.js";
+import CheckCard from "./slideKit/CheckCard.jsx";
+import { newCheckState, chooseOption as chooseCheckState, finishCheck as finishCheckState, skipCheck as skipCheckState, feedbackSpeech } from "./slideKit/checkFlow.js";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
@@ -482,7 +487,7 @@ async function recordSession(session, accessToken) {
         headers: { Prefer: "return=minimal" },
         body: JSON.stringify([
           {
-            id: makeId("session"),
+            id: session.id || makeId("session"),
             course_id: session.courseId,
             module_id: session.moduleId,
             student_id: session.studentId || null,
@@ -494,6 +499,7 @@ async function recordSession(session, accessToken) {
             transcript: session.transcript,
             summary: session.summary || null,
             started_at: session.startedAt,
+            research_consent: !!session.researchConsent,
           },
         ]),
       },
@@ -1547,6 +1553,27 @@ function SlideAdvancedEditor({ slide: s, onChange }) {
         </>
       )}
 
+      {s.type !== "summary" && (
+        <>
+          <LineEditor label="Quiz question — first line: question; then one option per line, put * before the correct one" rows={6}
+            placeholder={"What does javac produce?\nA runnable program\n*Bytecode\nSource code\nA text file"}
+            value={s.checks && s.checks[0] ? [s.checks[0].question, ...s.checks[0].options.map((o, k) => (k === s.checks[0].answer ? `*${o}` : o))].join("\n") : ""}
+            onCommit={(t) => {
+              const lines = nonEmptyLines(t);
+              if (lines.length < 4) { onChange({ checks: [] }); return; }
+              const options = lines.slice(1).map((l) => l.replace(/^\*\s*/, ""));
+              const answer = lines.slice(1).findIndex((l) => l.startsWith("*"));
+              onChange({ checks: answer >= 0 ? [{ question: lines[0], options, answer, explanation: (s.checks && s.checks[0] && s.checks[0].explanation) || "", concept: (s.checks && s.checks[0] && s.checks[0].concept) || (s.concepts && s.concepts[0]) || "" }] : [] });
+            }} />
+          {s.checks && s.checks[0] && (
+            <LineEditor label="What the lecturer says after the answer (why it's right, and the tempting mistake)" rows={2} value={s.checks[0].explanation || ""}
+              onCommit={(t) => onChange({ checks: [{ ...s.checks[0], explanation: t.trim() }] })} />
+          )}
+          <LineEditor label="Concepts taught — comma separated (used to track each student's understanding)" rows={1} value={(s.concepts || []).join(", ")}
+            onCommit={(t) => onChange({ concepts: t.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 3) })} />
+        </>
+      )}
+
       {(s.takeaways || s.type === "summary") && (
         <LineEditor label="Key takeaways — one per line" rows={4} value={(s.takeaways || []).join("\n")} onCommit={(t) => onChange({ takeaways: nonEmptyLines(t) })} />
       )}
@@ -1821,10 +1848,17 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
 // Students pick a course, then a module within it, then give their name.
 // Only courses with at least one saved module show up — a course with zero
 // modules is still "being built" and isn't joinable yet.
-function JoinScreen({ courses, onJoin, onBack, studentSession, onStudentSignIn, onStudentSignOut, onViewMyHistory }) {
+function JoinScreen({ courses, onJoin, onBack, onOpenLegal, studentSession, onStudentSignIn, onStudentSignOut, onViewMyHistory }) {
   const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [selectedModuleId, setSelectedModuleId] = useState(null);
   const [name, setName] = useState(studentSession ? studentSession.user.email.split("@")[0] : "");
+  const [research, setResearch] = useState(() => {
+    try { return localStorage.getItem("semai_research_consent") === "1"; } catch (e) { return false; }
+  });
+  const changeResearch = (v) => {
+    setResearch(v);
+    try { localStorage.setItem("semai_research_consent", v ? "1" : "0"); } catch (e) { /* ignore */ }
+  };
 
   const joinable = courses.filter((c) => c.modules.length > 0);
 
@@ -1905,9 +1939,17 @@ function JoinScreen({ courses, onJoin, onBack, studentSession, onStudentSignIn, 
           aria-label="Your name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && name.trim() && onJoin(course, module_, name)}
+          onKeyDown={(e) => e.key === "Enter" && name.trim() && onJoin(course, module_, name, research)}
         />
-        <button className="join-btn" disabled={!name.trim()} onClick={() => onJoin(course, module_, name)}>
+        <label className="consent-row">
+          <input type="checkbox" checked={research} onChange={(e) => changeResearch(e.target.checked)} />
+          <span>Optional: let an anonymised copy of my learning activity be used for education research. You can change this any time.</span>
+        </label>
+        <div className="join-hint" style={{ textAlign: "left" }}>
+          Your lecturer is shown how students interact with each lecture (slides viewed, quiz answers, questions) to improve it, and to personalise your learning. This never includes your name or email.{" "}
+          <button className="skip-link inline" onClick={() => onOpenLegal && onOpenLegal("privacy")}>Privacy Policy</button>
+        </div>
+        <button className="join-btn" disabled={!name.trim()} onClick={() => onJoin(course, module_, name, research)}>
           Join lecture
         </button>
         <div className="join-hint">Mic + speaker recommended. The lecturer speaks aloud and you can interrupt anytime.</div>
@@ -2246,6 +2288,97 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccoun
 // if nothing ever surfaces it back to a human, and a lecture leaves no
 // trace at all without this — this is what a department asks to see in
 // week one of any real pilot.
+// ---------------------------------------------------------------------------
+// Slide analytics (lecturer): where do students struggle? Built from the learning
+// event log through a database function that applies row-level security, so a
+// lecturer only ever sees events from their own courses.
+// ---------------------------------------------------------------------------
+function SlideAnalyticsPanel({ course, session }) {
+  const modules = course.modules || [];
+  const [moduleId, setModuleId] = useState(modules.length ? modules[0].id : null);
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!moduleId || !supabaseEnabled()) { setRows([]); return undefined; }
+    let cancelled = false;
+    setRows(null);
+    setError("");
+    supabaseRequest("/rpc/module_slide_stats", { method: "POST", body: JSON.stringify({ p_module_id: moduleId }) }, session && session.accessToken)
+      .then((r) => { if (!cancelled) setRows(Array.isArray(r) ? r : []); })
+      .catch((e) => { if (!cancelled) { setError(e.message || "Couldn't load slide analytics."); setRows([]); } });
+    return () => { cancelled = true; };
+  }, [moduleId, session]);
+
+  const mod = modules.find((m) => m.id === moduleId);
+  const byIndex = new Map((rows || []).map((r) => [r.slide_index, r]));
+  const slides = mod ? mod.slides || [] : [];
+  const maxViewers = Math.max(0, ...(rows || []).map((r) => Number(r.viewers) || 0));
+  const scored = slides.map((sl, i) => {
+    const r = byIndex.get(i) || null;
+    const sc = r ? attentionScore(r) : null;
+    return { i, sl, r, sc, level: heatLevel(sc), why: r ? whyFlagged(r) : [] };
+  });
+  const attention = scored.filter((x) => x.level === "hot");
+
+  return (
+    <div className="flag-section">
+      <div className="flag-section-title">Slide analytics</div>
+      {modules.length === 0 ? (
+        <div className="empty-hint">Add a module to see how students get on with each slide.</div>
+      ) : (
+        <>
+          {modules.length > 1 && (
+            <label className="sk-edit-field" style={{ maxWidth: 360 }}>
+              <span>Module</span>
+              <select value={moduleId || ""} onChange={(e) => setModuleId(e.target.value)} aria-label="Choose a module">
+                {modules.map((m) => <option key={m.id} value={m.id}>{m.unit || m.title || m.id}</option>)}
+              </select>
+            </label>
+          )}
+          {error && <div className="setup-error"><AlertTriangle size={13} /> {error}</div>}
+          {rows === null ? (
+            <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div>
+          ) : maxViewers === 0 ? (
+            <div className="empty-hint">No student activity recorded for this module yet. Once students attend, you'll see which slides confuse them, how long they spend on each, and how they answer the quiz questions.</div>
+          ) : (
+            <>
+              {maxViewers < 3 && <div className="empty-hint">Only {maxViewers} student{maxViewers === 1 ? "" : "s"} so far, so scores stay blank until at least 3 have attended (so one student can't mislead you).</div>}
+              {attention.length > 0 && (
+                <div className="sk-warnings" role="note">
+                  <strong>Slides that need attention</strong>
+                  <ul>{attention.map((x) => <li key={x.i}>Slide {x.i + 1} “{x.sl.title}”: {x.why.join("; ") || "high confusion"}</li>)}</ul>
+                </div>
+              )}
+              <div className="sk-table-wrap">
+                <table className="sk-table" style={{ fontSize: 12.5 }}>
+                  <thead>
+                    <tr><th scope="col">Slide</th><th scope="col">Students</th><th scope="col">Avg time</th><th scope="col">Quiz correct</th><th scope="col">Got it / Unsure / Lost</th><th scope="col">Questions</th><th scope="col">Needs attention</th></tr>
+                  </thead>
+                  <tbody>
+                    {scored.map(({ i, sl, r, sc, level }) => (
+                      <tr key={i}>
+                        <th scope="row">{i + 1}. {sl.title}</th>
+                        <td>{r ? r.viewers : 0}</td>
+                        <td>{r ? formatDwell(r.avg_dwell_ms) : "–"}</td>
+                        <td>{r && Number(r.checks) > 0 ? `${Math.round((Number(r.checks_correct) / Number(r.checks)) * 100)}% (${r.checks})` : "–"}</td>
+                        <td>{r ? `${r.got_it} / ${r.unsure} / ${r.lost}` : "–"}</td>
+                        <td>{r ? Number(r.questions) + Number(r.low_confidence > 0 ? 0 : 0) : "–"}</td>
+                        <td><span className={`heat heat-${level}`}>{sc === null ? "not enough data" : `${Math.round(sc * 100)}%`}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="account-text">Needs attention combines wrong quiz answers, “unsure/lost” taps and questions asked on that slide. A slide is only scored once enough students have given data.</p>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function CourseInsightsScreen({ course, session, onBack }) {
   const [sessions, setSessions] = useState(null); // null = loading
   const [flags, setFlags] = useState(null);
@@ -2312,6 +2445,8 @@ function CourseInsightsScreen({ course, session, onBack }) {
               <div className="stat-card"><div className="stat-value">{unresolvedFlags.length}</div><div className="stat-label">Unresolved flags</div></div>
             </div>
           )}
+
+          <SlideAnalyticsPanel course={course} session={session} />
 
           <div className="flag-section">
             <div className="flag-section-title">Sessions</div>
@@ -2384,7 +2519,7 @@ function CourseInsightsScreen({ course, session, onBack }) {
 // ---------------------------------------------------------------------------
 // Main meeting room
 // ---------------------------------------------------------------------------
-function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, role, onLeave, onEditSession }) {
+function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, researchConsent, role, onLeave, onEditSession }) {
   const [slideIndex, setSlideIndex] = useState(0);
   const [viewMode, setViewMode] = useState("slides"); // 'slides' | 'ide'
   const [chatOpen, setChatOpen] = useState(true);
@@ -2403,6 +2538,10 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [reveal, setReveal] = useState({ slide: -1, count: Infinity });
   const [activeLines, setActiveLines] = useState(null);
   const [stepCaption, setStepCaption] = useState("");
+  // comprehension check (multiple choice) shown after a slide is explained
+  const [activeCheck, setActiveCheck] = useState(null);
+  const checkResolverRef = useRef(null);
+  const [signals, setSignals] = useState({}); // slide index -> "got_it" | "unsure" | "lost"
   // The slide area scrolls to follow the lecturer; scrolling by hand pauses that.
   const stageRef = useRef(null);
   const [speakProgress, setSpeakProgress] = useState({ slide: -1, i: 0, n: 1, text: "" });
@@ -2441,6 +2580,46 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const mountedRef = useRef(true);
   const sessionRecordedRef = useRef(false);
   const sessionStartedAtRef = useRef(new Date().toISOString());
+
+  // ---- learning analytics: append-only event log (never for lecturer previews)
+  const sessionIdRef = useRef(makeId("session"));
+  const trackedSlideRef = useRef(null);
+  const focusIdRef = useRef(null);
+  const slideInfo = (i) => ({ index: i, key: slideKeyFor(curriculum.slides[i] || {}, i) });
+  const currentInfo = () => slideInfo(Math.min(slideIndexRef.current, curriculum.slides.length - 1));
+  const enterSlideTracking = (i) => {
+    const info = slideInfo(i);
+    trackedSlideRef.current = { info, t0: Date.now() };
+    track("slide_view", info, { type: curriculum.slides[i] && curriculum.slides[i].type });
+  };
+  const leaveSlideTracking = () => {
+    const cur = trackedSlideRef.current;
+    if (cur) {
+      track("slide_leave", cur.info, { dwell_ms: Date.now() - cur.t0 });
+      trackedSlideRef.current = null;
+    }
+  };
+  useEffect(() => {
+    startTracking({
+      enabled: role !== "lecturer" && supabaseEnabled() && !!courseId && !!moduleId,
+      url: SUPABASE_URL,
+      key: SUPABASE_ANON_KEY,
+      sessionId: sessionIdRef.current,
+      courseId,
+      moduleId,
+      studentId: studentSession ? studentSession.user.id : null,
+      studentKey: getStudentKey(),
+      consent: !!researchConsent,
+      getToken: studentSession ? () => studentSession.accessToken : null,
+    });
+    track("session_start", null, { total_slides: curriculum.slides.length, signed_in: !!studentSession, device: typeof window !== "undefined" && window.innerWidth < 700 ? "phone" : "desktop" });
+    return () => {
+      leaveSlideTracking();
+      flushEvents();
+      stopTracking();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const messagesRef = useRef([]);
   useEffect(() => {
     messagesRef.current = messages;
@@ -2529,6 +2708,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
     });
     if (top !== null) el.scrollTo({ top, behavior: "smooth" });
   }, [focusId, speakProgress, reveal, slideIndex, userScrolled, autopilotOn, viewMode]);
+
+  useEffect(() => () => { if (checkResolverRef.current) checkResolverRef.current({ cancelled: true }); }, []);
 
   const stopFollowing = () => setUserScrolled(true);
   const followLecturer = () => setUserScrolled(false); // the effect above scrolls straight back to what's being discussed
@@ -2814,8 +2995,40 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         setStepCaption("");
       }
 
-      // Quick, human "did that land?" check before moving on.
+      // Real comprehension check (multiple choice): recorded, and answered with the pre-written explanation.
+      const check = targetSlide.checks && targetSlide.checks[0];
       const isLast = index === curriculum.slides.length - 1;
+      let ranCheck = false;
+      if (check && !isLast && mountedRef.current && autopilotEnabledRef.current) {
+        const lead = "Quick question, to check you've got this.";
+        setLecturerState2("explaining");
+        addMessage("lecturer", lead, "explain");
+        const answered = new Promise((resolve) => {
+          checkResolverRef.current = resolve;
+          setActiveCheck(newCheckState(index, check, performance.now()));
+          track("check_shown", slideInfo(index), { concept: check.concept });
+        });
+        const leadDone = await speakInterruptible(lead);
+        if (!mountedRef.current) return;
+        if (!leadDone) await waitForIdle();
+        setLecturerState2("idle");
+        const outcome = await answered;
+        if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        ranCheck = true;
+        if (outcome && !outcome.skipped && !outcome.cancelled) {
+          const feedback = feedbackSpeech(check, outcome.correct);
+          setLecturerState2("explaining");
+          addMessage("lecturer", feedback, "explain");
+          const fbDone = await speakInterruptible(feedback);
+          if (!mountedRef.current) return;
+          if (!fbDone) await waitForIdle();
+          setLecturerState2("idle");
+          await sleep(700);
+        }
+      }
+
+      // Quick, human "did that land?" check before moving on (skipped when a real check just ran).
+      if (ranCheck) return;
       setLecturerState2("loading");
       const checkSystem = `You are ${lecturerIdentity}. In one short, warm sentence, check whether the student followed what you just covered${
         isLast ? ", and let them know that wraps up today's material" : `, before moving on to "${curriculum.slides[index + 1].title}"`
@@ -2897,9 +3110,13 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const currentMessages = messagesRef.current;
       const questionCount = currentMessages.filter((m) => m.type === "question").length;
       const slidesReached = completed ? curriculum.slides.length : slideIndexRef.current + 1;
+      track("session_end", null, { completed, slides_reached: slidesReached, questions: questionCount, duration_s: Math.round((Date.now() - new Date(sessionStartedAtRef.current).getTime()) / 1000) });
+      flushEvents();
       const summary = await generateSessionSummary(curriculum, currentMessages);
       await recordSession(
         {
+          id: sessionIdRef.current,
+          researchConsent,
           courseId,
           moduleId,
           studentId: studentSession ? studentSession.user.id : null,
@@ -2915,7 +3132,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         studentSession ? studentSession.accessToken : undefined
       );
     },
-    [role, courseId, moduleId, curriculum, studentName, studentSession]
+    [role, courseId, moduleId, curriculum, studentName, studentSession, researchConsent]
   );
 
   useEffect(() => {
@@ -2930,6 +3147,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const handleQuestion = useCallback(
     async (questionText) => {
       const tQuestion = performance.now();
+      track("question", currentInfo(), { chars: questionText.length, focus: focusIdRef.current });
       addMessage(studentName, questionText, "question");
       if (stateRef.current === "explaining") {
         stopSpeaking();
@@ -2979,7 +3197,9 @@ ${NATURAL_SPEECH_STYLE}`;
       const { confidence, answer: safeAnswer } = parseAnswerJSON(rawAnswer, fallbackAnswer);
 
       addMessage("lecturer", safeAnswer, confidence === "low" ? "answer-flagged" : "answer");
+      track("ai_answer", currentInfo(), { confidence, chars: safeAnswer.length });
       if (confidence === "low") {
+        track("flag", currentInfo(), null);
         flagQuestionForLecturer(courseId, moduleId, studentName, questionText, safeAnswer, slide.title);
       }
       setLecturerState2("answering");
@@ -3077,13 +3297,68 @@ ${NATURAL_SPEECH_STYLE}`;
       setHandRaised(false);
       return;
     }
+    track("interrupt", currentInfo(), { focus: focusIdRef.current });
     setHandRaised(true);
     startListening();
+  };
+
+  // ---- comprehension check handlers
+  const cancelActiveCheck = () => {
+    if (checkResolverRef.current) {
+      checkResolverRef.current({ cancelled: true });
+      checkResolverRef.current = null;
+    }
+    setActiveCheck(null);
+  };
+  const chooseCheckOption = (i) => {
+    setActiveCheck((c) => chooseCheckState(c, i, performance.now()));
+  };
+  const finishCheck = (confidence) => {
+    setActiveCheck((c) => {
+      const r = finishCheckState(c, confidence);
+      if (!r.event) return c;
+      track("check_answer", slideInfo(c.index), r.event);
+      const resolve = checkResolverRef.current;
+      checkResolverRef.current = null;
+      if (resolve) resolve(r.outcome);
+      return r.state;
+    });
+  };
+  const skipCheck = () => {
+    setActiveCheck((c) => {
+      const r = skipCheckState(c);
+      if (!r.event) return c;
+      track("check_skip", slideInfo(c.index), r.event);
+      const resolve = checkResolverRef.current;
+      checkResolverRef.current = null;
+      if (resolve) resolve(r.outcome);
+      return r.state;
+    });
+  };
+  // the card belongs to one slide; leave it behind when the slide changes
+  useEffect(() => {
+    setActiveCheck((c) => (c && c.index !== slideIndex ? null : c));
+  }, [slideIndex]);
+  useEffect(() => {
+    if (activeCheck && stageRef.current) {
+      const el = stageRef.current.querySelector(".check-card");
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [activeCheck && activeCheck.phase, activeCheck && activeCheck.index]);
+
+  // ---- "Got it / Unsure / Lost" (a lost student gets the point re-explained straight away)
+  const sendSignal = (value) => {
+    if (signals[slideIndex] === value) return;
+    setSignals((s) => ({ ...s, [slideIndex]: value }));
+    track("signal", currentInfo(), { value, focus: focusIdRef.current });
+    if (value === "lost") handleQuestion("I'm lost on this part. Could you explain it again in a simpler way, with a different example?");
   };
 
   // Manual navigation always pauses autopilot — otherwise the AI-driven
   // loop and a manually-jumping student would fight over the current slide.
   const changeSlide = (dir) => {
+    track("slide_nav", currentInfo(), { dir });
+    cancelActiveCheck();
     stopSpeaking();
     setAutopilotOn(false);
     setReveal({ slide: -1, count: Infinity });
@@ -3095,7 +3370,9 @@ ${NATURAL_SPEECH_STYLE}`;
   };
 
   const toggleAutopilot = () => {
+    track("autopilot_toggle", currentInfo(), { on: !autopilotOn });
     if (autopilotOn) {
+      cancelActiveCheck();
       stopSpeaking();
       setLecturerState2("idle");
       setInterrupted(false);
@@ -3129,6 +3406,7 @@ ${NATURAL_SPEECH_STYLE}`;
     setNotesStatus("generating");
     try {
       const upTo = sessionComplete ? curriculum.slides.length : maxSlideReachedRef.current + 1;
+      track("notes_download", currentInfo(), { up_to: upTo });
       const sections = await generateLectureNotes(curriculum, setNotesProgress, upTo);
       if (!mountedRef.current) return;
       await downloadLectureNotesPdf(curriculum, sections);
@@ -3151,6 +3429,14 @@ ${NATURAL_SPEECH_STYLE}`;
   useEffect(() => {
     maxSlideReachedRef.current = Math.max(maxSlideReachedRef.current, slideIndex);
   }, [slideIndex]);
+
+  // dwell time per slide: leave the previous slide, enter the new one
+  useEffect(() => {
+    leaveSlideTracking();
+    enterSlideTracking(slideIndex);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slideIndex]);
+  useEffect(() => { focusIdRef.current = focusId; }, [focusId]);
 
   const statusLabel = () => {
     if (lecturerState === "loading") return "Thinking…";
@@ -3274,6 +3560,9 @@ ${NATURAL_SPEECH_STYLE}`;
                 )}
               </div>
             )}
+            {activeCheck && activeCheck.index === slideIndex && (
+              <CheckCard state={activeCheck} onChoose={chooseCheckOption} onConfidence={finishCheck} onSkip={skipCheck} />
+            )}
             {viewMode === "slides" && userScrolled && autopilotOn && speakProgress.slide === slideIndex && lecturerState !== "idle" && (
               <button className="follow-pill" onClick={followLecturer}>↧ Follow the lecturer</button>
             )}
@@ -3294,6 +3583,15 @@ ${NATURAL_SPEECH_STYLE}`;
               Next <ChevronRight size={16} />
             </button>
           </div>
+
+          {role !== "lecturer" && (
+            <div className="signal-row" role="group" aria-label="How are you finding this slide?">
+              <span className="signal-label">How is this going?</span>
+              {[["got_it", "Got it"], ["unsure", "Unsure"], ["lost", "I'm lost"]].map(([v, label]) => (
+                <button key={v} className={`signal-btn ${v}${signals[slideIndex] === v ? " on" : ""}`} aria-pressed={signals[slideIndex] === v} onClick={() => sendSignal(v)}>{label}</button>
+              ))}
+            </div>
+          )}
 
           {sessionComplete && (
             <div className="complete-banner">
@@ -3400,6 +3698,7 @@ export default function SEMAIApp() {
   const [editingCourse, setEditingCourse] = useState(false);
   const [roomData, setRoomData] = useState(null); // { curriculum, settings }
   const [studentName, setStudentName] = useState("Student");
+  const [researchConsent, setResearchConsent] = useState(false);
   const [dbStatus, setDbStatus] = useState(supabaseEnabled() ? "loading" : "local"); // loading | connected | error | local
   const [session, setSession] = useState(null); // { accessToken, refreshToken, user: {id, email} } | null
   const [studentSession, setStudentSession] = useState(null); // same shape, separate identity/storage — a student account isn't a lecturer account
@@ -3590,8 +3889,9 @@ export default function SEMAIApp() {
     setStage("room");
   };
 
-  const handleJoin = (course, module, name) => {
+  const handleJoin = (course, module, name, research) => {
     primeAudioForVoice(); // must run inside this click-triggered call, not later in a useEffect
+    setResearchConsent(!!research);
     setRoomData(buildRoomData(course, module));
     setStudentName(name);
     setStage("room");
@@ -3671,6 +3971,7 @@ export default function SEMAIApp() {
         <JoinScreen
           courses={courses}
           onJoin={handleJoin}
+          onOpenLegal={openLegal}
           onBack={() => setStage("role")}
           studentSession={studentSession}
           onStudentSignIn={() => setStage("studentAuth")}
@@ -3692,6 +3993,7 @@ export default function SEMAIApp() {
           moduleId={roomData.moduleId}
           studentName={studentName}
           studentSession={role === "student" ? studentSession : null}
+          researchConsent={researchConsent}
           role={role}
           onLeave={handleLeaveRoom}
           onEditSession={role === "lecturer" ? () => setStage("dashboard") : null}

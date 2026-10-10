@@ -1,0 +1,26 @@
+import { newCheckState, chooseOption, finishCheck, skipCheck, feedbackSpeech } from "../src/slideKit/checkFlow.js";
+let fail = 0;
+const t = (n, c, e) => { if (!c) { fail++; console.log("FAIL", n, e ?? ""); } else console.log("ok  ", n); };
+const check = { question: "Q?", options: ["alpha", "beta", "gamma", "delta"], answer: 2, explanation: "Because gamma.", concept: "greek" };
+
+let s = newCheckState(3, check, 1000);
+t("starts in the answering phase", s.phase === "answering" && s.index === 3 && s.chosen === null);
+t("cannot confirm confidence before choosing", finishCheck(s, "sure").event === null && finishCheck(s, "sure").state === s);
+const wrong = chooseOption(s, 0, 5200);
+t("wrong choice graded, time measured from when it was shown", wrong.phase === "confidence" && wrong.correct === false && wrong.timeMs === 4200 && wrong.chosen === 0);
+t("answer can't be changed after choosing", chooseOption(wrong, 2, 6000) === wrong);
+t("out-of-range option ignored", chooseOption(s, 9, 2000) === s && chooseOption(s, -1, 2000) === s && chooseOption(s, 1.5, 2000) === s);
+const r = finishCheck(wrong, "sure");
+t("recorded event has everything analytics needs", r.event.concept === "greek" && r.event.correct === false && r.event.option === 0 && r.event.correct_option === 2 && r.event.option_text === "alpha" && r.event.time_ms === 4200 && r.event.confidence === "sure", JSON.stringify(r.event));
+t("a confident wrong answer is captured (the most informative case)", r.outcome.correct === false && r.outcome.confidence === "sure");
+t("moves to feedback; a second finish is ignored", r.state.phase === "feedback" && finishCheck(r.state, "guess").event === null);
+const right = finishCheck(chooseOption(s, 2, 3000), null);
+t("correct answer with confidence skipped -> confidence null, still recorded", right.event.correct === true && right.event.confidence === null && right.outcome.correct === true);
+t("junk confidence value is not stored", finishCheck(chooseOption(s, 2, 3000), "banana").event.confidence === null);
+const sk1 = skipCheck(s);
+t("skip before answering: state cleared, phase recorded", sk1.state === null && sk1.event.phase === "answering" && sk1.outcome.skipped === true);
+t("skip after choosing but before confirming: recorded as such", skipCheck(wrong).event.phase === "confidence");
+t("skip is impossible once graded (can't un-answer)", skipCheck(r.state).event === null && skipCheck(r.state).state === r.state);
+t("feedback speech", feedbackSpeech(check, true) === "That's right. Because gamma." && feedbackSpeech(check, false) === "Not quite. Because gamma." && feedbackSpeech({ ...check, explanation: "" }, true) === "That's right.");
+t("option_text clipped to 120 chars", finishCheck(chooseOption(newCheckState(0, { ...check, options: ["x".repeat(500), "b", "c", "d"] }, 0), 0, 10), null).event.option_text.length === 120);
+console.log(fail ? `\n${fail} FAILED` : "\nALL PASS"); process.exit(fail ? 1 : 0);

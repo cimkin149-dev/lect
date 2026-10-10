@@ -1,0 +1,17 @@
+import { attentionScore, heatLevel, whyFlagged, formatDwell } from "../src/slideKit/insights.js";
+let fail = 0;
+const t = (n, c, e) => { if (!c) { fail++; console.log("FAIL", n, e ?? ""); } else console.log("ok  ", n); };
+const base = { viewers: 10, checks: 0, checks_correct: 0, got_it: 0, unsure: 0, lost: 0, questions: 0, low_confidence: 0 };
+t("no usable data -> no score (never invent one)", attentionScore({ ...base, viewers: 2 }) === null && heatLevel(null) === "unknown");
+const confusing = { ...base, checks: 10, checks_correct: 3, got_it: 2, unsure: 3, lost: 5, questions: 6 };
+const fine = { ...base, checks: 10, checks_correct: 9, got_it: 8, unsure: 1, lost: 0, questions: 1 };
+t("confusing slide scores high / hot", attentionScore(confusing) >= 0.5 && heatLevel(attentionScore(confusing)) === "hot", attentionScore(confusing));
+t("well-understood slide scores low / cool", attentionScore(fine) < 0.3 && heatLevel(attentionScore(fine)) === "cool", attentionScore(fine));
+t("signals under the threshold are ignored (2 'lost' alone prove nothing)", attentionScore({ ...base, viewers: 2, lost: 2 }) === null);
+t("only check data available -> still scored from it", attentionScore({ ...base, viewers: 2, checks: 5, checks_correct: 1 }) > 0.7);
+t("score stays within 0..1", [confusing, fine, { ...base, questions: 99, viewers: 3 }].every((r) => { const s = attentionScore(r); return s >= 0 && s <= 1; }));
+const why = whyFlagged(confusing);
+t("explains WHY a slide is flagged, in plain language", why.length === 3 && /30% answered the check correctly/.test(why[0]) && /80% said unsure or lost/.test(why[1]), JSON.stringify(why));
+t("healthy slide has no reasons", whyFlagged(fine).length === 0);
+t("dwell formatting", formatDwell(45000) === "45s" && formatDwell(125000) === "2m 05s" && formatDwell(null) === "–");
+console.log(fail ? `\n${fail} FAILED` : "\nALL PASS"); process.exit(fail ? 1 : 0);

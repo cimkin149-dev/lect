@@ -47,5 +47,18 @@ const cw = normalizeSlide({ type: "code_walkthrough", title: "Loop", code: "for 
 t("code steps clamped", cw.codeSteps[1].lines[1] === 3 && cw.language === "c" && cw.filename === "main.c");
 const ctx = slideToPlainContext(we);
 t("plain context includes steps + formulas as text", /Step 1 \(Factor\)/.test(ctx) && /Problem: Solve/.test(ctx));
+// ---- concepts + comprehension checks
+const withCheck = normalizeSlide({ title: "T", concepts: ["variables", "types", "a", "b"], prerequisites: ["x"], check: { question: "Q?", options: ["a", "b", "c", "d"], answer: 2, explanation: "Because.", concept: "types" } });
+t("concepts capped at 3, prerequisites kept", withCheck.concepts.length === 3 && withCheck.prerequisites[0] === "x");
+t("single `check` object normalised into checks[]", withCheck.checks.length === 1 && withCheck.checks[0].answer === 2 && withCheck.checks[0].concept === "types" && withCheck.checks[0].options.length === 4);
+t("normalising twice keeps the same check (idempotent)", JSON.stringify(normalizeSlide(withCheck).checks) === JSON.stringify(withCheck.checks));
+t("check concept defaults to the slide's first concept", normalizeSlide({ title: "T", concepts: ["loops"], check: { question: "Q?", options: ["a", "b", "c"], answer: 0 } }).checks[0].concept === "loops");
+t("answer index out of range -> check dropped (never show a wrong key)", !normalizeSlide({ title: "T", check: { question: "Q?", options: ["a", "b", "c", "d"], answer: 7 } }).checks);
+t("answer missing -> dropped", !normalizeSlide({ title: "T", check: { question: "Q?", options: ["a", "b", "c", "d"] } }).checks);
+t("fewer than 3 options -> dropped", !normalizeSlide({ title: "T", check: { question: "Q?", options: ["a", "b"], answer: 0 } }).checks);
+const dup = normalizeSlide({ title: "T", check: { question: "Q?", options: ["x", "y", "Y", "z"], answer: 3 } }).checks;
+t("duplicate options removed and the answer index follows its option", dup && dup[0].options.join() === "x,y,z" && dup[0].options[dup[0].answer] === "z", JSON.stringify(dup));
+t("old slides have no checks/concepts keys", !("checks" in normalizeSlide(old)) && !("concepts" in normalizeSlide(old)));
+t("plain context mentions concepts", /Concepts taught: variables/.test(slideToPlainContext(withCheck)));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);
