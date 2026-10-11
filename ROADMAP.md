@@ -52,6 +52,16 @@ immediately. Optional research-consent checkbox on joining (stored on the sessio
 enough students have data. Privacy policy updated. Next: Phase B (misconception grouping, flagged-question review, suggestions), Phase C
 (student mastery model + adaptive lecturing), Phase D (research exports/experiments), Phase E (pilot evaluation).
 
+v1.7.0 (10 Oct 2026): **Learning analytics, Phase B.** Lecturer view now shows *understanding by concept*, *common wrong answers*
+(each wrong option students choose most is a named misconception; "very sure" wrong answers flag firmly held mistakes), concepts the class is
+finding hard, and an on-demand AI **"Suggest improvements"** for slides flagged "needs attention". **The lecturer teaches the AI:** on a flagged
+student question the lecturer can write the correct answer (the question is reworded generally, no names); the AI lecturer then bases its
+answer on that approved answer when a student asks something similar (`module_corrections`, SECURITY DEFINER, approved pairs only; matching is
+deliberately strict so an unrelated approved answer is never injected). **Student mastery model** (`src/learning/mastery.js`): per-concept
+Beta-Bernoulli estimate with recency decay, guesses counting half and confident-wrong answers counting 1.5x; "What I've learned" on the student's
+history page shows strengths, "revise first" and whether their confidence is well calibrated. Verified with live database tests (breakdown
+aggregation, per-lecturer isolation, approval flow, length limits, no leakage of student wording/names).
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

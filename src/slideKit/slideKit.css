@@ -149,3 +149,23 @@ tr.sk-focus > th, tr.sk-focus > td { background: rgba(232, 163, 61, 0.12); }
 .heat-warm { background: rgba(232,163,61,0.22); color: #F5D9A4; }
 .heat-hot { background: rgba(224,115,90,0.28); color: #FFD3C8; }
 .heat-unknown { background: #232C38; color: #8890A0; font-weight: 400; }
+
+/* Analytics phase B */
+.misconception-list { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 10px; }
+.misconception-list li { background: #1B222C; border: 1px solid #2A313C; border-left: 3px solid #E0735A; border-radius: 10px; padding: 10px 14px; font-size: 13.5px; line-height: 1.6; color: #C7CCD4; }
+.misconception-sure { color: #F5C0B4; }
+.flag-approve { margin-top: 10px; }
+.mastery-list { list-style: none; padding: 0; margin: 12px 0; display: flex; flex-direction: column; gap: 12px; }
+.mastery-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.mastery-name { font-size: 14px; color: #EDEFF2; font-weight: 600; }
+.mastery-tag { font-size: 11px; border-radius: 6px; padding: 1px 8px; background: #232C38; color: #C7CCD4; }
+.mastery-tag.strong { background: rgba(47,111,79,0.28); color: #BFEAD3; }
+.mastery-tag.developing { background: rgba(232,163,61,0.2); color: #F5D9A4; }
+.mastery-tag.weak { background: rgba(224,115,90,0.26); color: #FFD3C8; }
+.mastery-trend { font-size: 11.5px; color: #8890A0; }
+.mastery-bar { height: 8px; border-radius: 999px; background: #232C38; margin: 6px 0 3px; overflow: hidden; }
+.mastery-fill { height: 100%; border-radius: 999px; background: #4B5563; transition: width 0.4s ease; }
+.mastery-fill.strong { background: #4FB286; }
+.mastery-fill.developing { background: #E8A33D; }
+.mastery-fill.weak { background: #E0735A; }
+.mastery-note { font-size: 11.5px; color: #8890A0; }

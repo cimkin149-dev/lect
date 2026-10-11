@@ -3,6 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import SlideView from "../../src/slideKit/SlideView.jsx";
 import CodePane from "../../src/slideKit/CodePane.jsx";
 import CheckCard from "../../src/slideKit/CheckCard.jsx";
+import MasteryPanel from "../../src/learning/MasteryPanel.jsx";
+import FlagReviewCard from "../../src/learning/FlagReviewCard.jsx";
+import { ConceptTable, MisconceptionList } from "../../src/learning/ClassInsights.jsx";
 import { newCheckState, chooseOption, finishCheck } from "../../src/slideKit/checkFlow.js";
 import { normalizeSlide } from "../../src/slideKit/schema.js";
 import { extractBlocks } from "../../src/slideKit/focus.js";
@@ -78,5 +81,16 @@ t("after choosing: options locked, confidence chips offered, answer not yet reve
 cs = finishCheck(cs, "sure").state;
 ch = renderToStaticMarkup(<CheckCard state={cs} onChoose={noop} onConfidence={noop} onSkip={noop} />);
 t("feedback: correct option ticked, wrong choice marked, explanation shown", ch.includes("check-option chosen wrong") && ch.includes("correct answer") && ch.includes("Not quite.") && ch.includes("Nine."));
+// ---- analytics phase B components
+const mp = renderToStaticMarkup(<MasteryPanel mastery={[{ concept: "pointers", mastery: 0.31, n: 4, level: "weak", trend: "slipping" }, { concept: "loops", mastery: 0.9, n: 5, level: "strong", trend: "steady" }, { concept: "recursion", mastery: 0.5, n: 1, level: "building", trend: "steady" }]} revise={[{ concept: "pointers", trend: "slipping" }]} calibration={{ level: "overconfident", rate: 0.5 }} />);
+t("mastery panel: revise-first box, labels, trend, honest 'building' state, calibration nudge", mp.includes("Worth revising first") && mp.includes("pointers") && mp.includes("was better before") && mp.includes("Needs work") && mp.includes("Strong") && mp.includes("↘ slipping") && mp.includes("keep going") && mp.includes("wrong 50% of the time"));
+t("mastery panel has accessible bar labels", mp.includes('aria-label="pointers: 31 percent"') && mp.includes("not enough answers yet"));
+t("mastery panel empty state invites the student to answer quizzes", renderToStaticMarkup(<MasteryPanel mastery={[]} />).includes("Answer the quick quiz questions"));
+const ct = renderToStaticMarkup(<ConceptTable concepts={[{ concept: "types", answers: 6, correctRate: 2 / 6, confidentWrongRate: 2 / 6 }, { concept: "loops", answers: 2, correctRate: 1, confidentWrongRate: 0 }]} />);
+t("concept table: low accuracy heated, tiny samples not judged", ct.includes("heat-hot") && ct.includes("33%") && ct.includes("too few answers") && !ct.includes("100%"));
+const ml = renderToStaticMarkup(<MisconceptionList items={[{ slideIndex: 2, concept: "types", wrongText: "Integer", count: 3, shareOfWrong: 0.75, confidentCount: 2 }]} slideTitle={() => "Variables"} />);
+t("misconception list names the wrong answer, share and the 'very sure' signal", ml.includes("Slide 3") && ml.includes("Variables") && ml.includes("Integer") && ml.includes("75%") && ml.includes("firmly held mistake"));
+const fr = renderToStaticMarkup(<FlagReviewCard f={{ id: "f1", slide_title: "Types", student_name: "Sam", created_at: "2026-10-01T00:00:00Z", question: "what is autoboxing", ai_answer: "not sure" }} onResolve={noop} onApprove={noop} />);
+t("flag card offers BOTH 'write the correct answer' and 'mark resolved'", fr.includes("Write the correct answer") && fr.includes("Mark resolved") && fr.includes("AI said: not sure"));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

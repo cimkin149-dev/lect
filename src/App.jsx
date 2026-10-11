@@ -15,6 +15,12 @@ import { logTiming, getTimingSummary } from "./telemetry.js";
 import { startTracking, track, flushEvents, stopTracking, getStudentKey, slideKeyFor } from "./analytics.js";
 import { attentionScore, heatLevel, whyFlagged, formatDwell } from "./slideKit/insights.js";
 import CheckCard from "./slideKit/CheckCard.jsx";
+import { estimateMastery, calibration as studentCalibration, conceptsToRevise } from "./learning/mastery.js";
+import { summarizeBreakdown, commonMisconceptions, weakConcepts } from "./learning/misconceptions.js";
+import { pickCorrections, correctionsPromptBlock } from "./learning/corrections.js";
+import { ConceptTable, MisconceptionList } from "./learning/ClassInsights.jsx";
+import MasteryPanel from "./learning/MasteryPanel.jsx";
+import FlagReviewCard from "./learning/FlagReviewCard.jsx";
 import { newCheckState, chooseOption as chooseCheckState, finishCheck as finishCheckState, skipCheck as skipCheckState, feedbackSpeech } from "./slideKit/checkFlow.js";
 import {
   Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
@@ -469,6 +475,45 @@ async function resolveFlaggedQuestion(flagId, accessToken) {
     { method: "PATCH", body: JSON.stringify({ resolved: true }) },
     accessToken
   );
+}
+
+// Lecturer-approved answers to earlier flagged questions for this module (the AI lecturer uses them).
+// Public on purpose: the database function returns ONLY approved question/answer pairs, never raw student questions.
+async function fetchModuleCorrections(moduleId) {
+  if (!supabaseEnabled() || !moduleId) return [];
+  try {
+    const r = await supabaseRequest("/rpc/module_corrections", { method: "POST", body: JSON.stringify({ p_module_id: moduleId }) });
+    return Array.isArray(r) ? r : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function approveFlaggedQuestion(flagId, question, answer, accessToken) {
+  await supabaseRequest(
+    `/flagged_questions?id=eq.${encodeURIComponent(flagId)}`,
+    { method: "PATCH", body: JSON.stringify({ approved_question: question, lecturer_answer: answer, approved_at: new Date().toISOString(), resolved: true }) },
+    accessToken
+  );
+}
+
+// A student's own quiz answers (row-level security returns only their own).
+async function fetchMyCheckEvents(studentId, accessToken) {
+  const rows = await supabaseRequest(
+    `/learning_events?student_id=eq.${encodeURIComponent(studentId)}&event_type=eq.check_answer&select=created_at,payload&order=created_at.asc&limit=2000`,
+    {},
+    accessToken
+  );
+  return (Array.isArray(rows) ? rows : [])
+    .map((r) => ({ concept: r.payload && r.payload.concept, correct: r.payload && (r.payload.correct === true || r.payload.correct === "true"), confidence: r.payload && r.payload.confidence, ts: Date.parse(r.created_at) }))
+    .filter((e) => e.concept && typeof e.correct === "boolean");
+}
+
+// AI advice for a slide that is confusing students (on demand; plain text).
+async function suggestSlideImprovements(slide, evidence) {
+  const system = "You are an expert in teaching and instructional design advising a university lecturer. Be concrete and brief. Plain text only: no markdown, no asterisks, no headings.";
+  const prompt = `A slide in an AI-delivered lecture is confusing students.\n\nThe slide:\n${slideToPlainContext(slide)}\n\nEvidence from students:\n${evidence}\n\nGive exactly 3 specific changes the lecturer could make to this slide (for example: add a worked example, split the slide in two, replace an abstract explanation with an analogy, reorder the points, define a term earlier), each in one or two sentences, numbered 1 to 3. Then add one final line starting with "Try saying:" containing a clearer two-sentence explanation of the idea students most likely misunderstand. Under 170 words in total.`;
+  return callAI(system, prompt, 700, undefined, "suggest");
 }
 
 // Written once, at the end of a session (either it completes naturally or
@@ -2146,6 +2191,19 @@ function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
+  const [learning, setLearning] = useState(null); // { mastery, revise, calibration }
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchMyCheckEvents(session.user.id, session.accessToken)
+      .then((events) => {
+        if (cancelled) return;
+        const mastery = estimateMastery(events);
+        setLearning({ mastery, revise: conceptsToRevise(mastery, 3), calibration: studentCalibration(events) });
+      })
+      .catch(() => { if (!cancelled) setLearning({ mastery: [], revise: [], calibration: { level: "unknown" } }); });
+    return () => { cancelled = true; };
+  }, [session]);
 
   useEffect(() => {
     fetchMySessions(session.user.id, session.accessToken)
@@ -2166,6 +2224,12 @@ function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
       </div>
 
       {error && <div className="setup-error"><AlertTriangle size={13} /> {error}</div>}
+
+      <section className="account-panel" style={{ marginTop: 0, borderTop: "none" }} aria-labelledby="learned-heading">
+        <h2 id="learned-heading" className="account-title">What I've learned</h2>
+        <p className="account-text">Built from your answers to the quick quiz questions. Recent answers count most, and a confident wrong answer counts more than an honest guess, because those are the mistakes worth fixing. Your lecturer sees class-wide results only.</p>
+        {learning === null ? <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div> : <MasteryPanel mastery={learning.mastery} revise={learning.revise} calibration={learning.calibration} />}
+      </section>
 
       {sessions === null ? (
         <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div>
@@ -2297,15 +2361,20 @@ function SlideAnalyticsPanel({ course, session }) {
   const modules = course.modules || [];
   const [moduleId, setModuleId] = useState(modules.length ? modules[0].id : null);
   const [rows, setRows] = useState(null);
+  const [breakdown, setBreakdown] = useState([]);
   const [error, setError] = useState("");
+  const [advice, setAdvice] = useState({}); // slide index -> { loading, text, error }
 
   useEffect(() => {
     if (!moduleId || !supabaseEnabled()) { setRows([]); return undefined; }
     let cancelled = false;
     setRows(null);
+    setBreakdown([]);
+    setAdvice({});
     setError("");
-    supabaseRequest("/rpc/module_slide_stats", { method: "POST", body: JSON.stringify({ p_module_id: moduleId }) }, session && session.accessToken)
-      .then((r) => { if (!cancelled) setRows(Array.isArray(r) ? r : []); })
+    const call = (fn) => supabaseRequest(`/rpc/${fn}`, { method: "POST", body: JSON.stringify({ p_module_id: moduleId }) }, session && session.accessToken);
+    Promise.all([call("module_slide_stats"), call("module_check_breakdown")])
+      .then(([r, b]) => { if (!cancelled) { setRows(Array.isArray(r) ? r : []); setBreakdown(Array.isArray(b) ? b : []); } })
       .catch((e) => { if (!cancelled) { setError(e.message || "Couldn't load slide analytics."); setRows([]); } });
     return () => { cancelled = true; };
   }, [moduleId, session]);
@@ -2320,7 +2389,22 @@ function SlideAnalyticsPanel({ course, session }) {
     return { i, sl, r, sc, level: heatLevel(sc), why: r ? whyFlagged(r) : [] };
   });
   const attention = scored.filter((x) => x.level === "hot");
+  const quizSummary = summarizeBreakdown(breakdown);
+  const misconceptions = commonMisconceptions(quizSummary).slice(0, 8);
+  const weak = weakConcepts(quizSummary);
+  const slideTitleAt = (i) => (slides[i] ? slides[i].title : "");
 
+  const getAdvice = async (x) => {
+    setAdvice((a) => ({ ...a, [x.i]: { loading: true } }));
+    const top = misconceptions.filter((m) => m.slideIndex === x.i).slice(0, 3).map((m) => `${m.count} students chose the wrong answer "${m.wrongText}"${m.confidentCount ? ` (${m.confidentCount} were very sure)` : ""}`);
+    const evidence = [...x.why, ...top].join("\n") || "Students are struggling with this slide.";
+    try {
+      const text = await suggestSlideImprovements(x.sl, evidence);
+      setAdvice((a) => ({ ...a, [x.i]: { text } }));
+    } catch (e) {
+      setAdvice((a) => ({ ...a, [x.i]: { error: e.message || "Couldn't get suggestions right now." } }));
+    }
+  };
   return (
     <div className="flag-section">
       <div className="flag-section-title">Slide analytics</div>
@@ -2347,7 +2431,24 @@ function SlideAnalyticsPanel({ course, session }) {
               {attention.length > 0 && (
                 <div className="sk-warnings" role="note">
                   <strong>Slides that need attention</strong>
-                  <ul>{attention.map((x) => <li key={x.i}>Slide {x.i + 1} “{x.sl.title}”: {x.why.join("; ") || "high confusion"}</li>)}</ul>
+                  <ul>
+                    {attention.map((x) => (
+                      <li key={x.i}>
+                        Slide {x.i + 1} “{x.sl.title}”: {x.why.join("; ") || "high confusion"}{" "}
+                        <button className="skip-link inline" onClick={() => getAdvice(x)} disabled={advice[x.i] && advice[x.i].loading}>
+                          {advice[x.i] && advice[x.i].loading ? "Thinking…" : "Suggest improvements"}
+                        </button>
+                        {advice[x.i] && advice[x.i].text && <p style={{ whiteSpace: "pre-wrap", margin: "6px 0 2px", color: "#EDEFF2" }}>{advice[x.i].text}</p>}
+                        {advice[x.i] && advice[x.i].error && <p style={{ margin: "6px 0 2px" }}>{advice[x.i].error}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {weak.length > 0 && (
+                <div className="sk-warnings" role="note">
+                  <strong>Concepts the class is finding hard</strong>
+                  <ul>{weak.map((c) => <li key={c.concept}>{c.concept}: {Math.round(c.correctRate * 100)}% correct across {c.answers} answers</li>)}</ul>
                 </div>
               )}
               <div className="sk-table-wrap">
@@ -2370,6 +2471,18 @@ function SlideAnalyticsPanel({ course, session }) {
                   </tbody>
                 </table>
               </div>
+              {quizSummary.concepts.length > 0 && (
+                <>
+                  <div className="flag-section-title" style={{ marginTop: 18 }}>Understanding by concept</div>
+                  <ConceptTable concepts={quizSummary.concepts} />
+                </>
+              )}
+              {misconceptions.length > 0 && (
+                <>
+                  <div className="flag-section-title" style={{ marginTop: 18 }}>Common wrong answers (misconceptions)</div>
+                  <MisconceptionList items={misconceptions} slideTitle={slideTitleAt} />
+                </>
+              )}
               <p className="account-text">Needs attention combines wrong quiz answers, “unsure/lost” taps and questions asked on that slide. A slide is only scored once enough students have given data.</p>
             </>
           )}
@@ -2404,6 +2517,11 @@ function CourseInsightsScreen({ course, session, onBack }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  const approveFlag = async (flagId, question, answer) => {
+    await approveFlaggedQuestion(flagId, question, answer, session?.accessToken);
+    setFlags((fs) => fs.map((f) => (f.id === flagId ? { ...f, resolved: true, approved_question: question, lecturer_answer: answer } : f)));
+  };
 
   const markResolved = async (flagId) => {
     setFlags((fs) => fs.map((f) => (f.id === flagId ? { ...f, resolved: true } : f)));
@@ -2487,12 +2605,7 @@ function CourseInsightsScreen({ course, session, onBack }) {
               <div className="flag-section-title">Needs review ({unresolvedFlags.length})</div>
               <div className="flag-list">
                 {unresolvedFlags.map((f) => (
-                  <div className="flag-card" key={f.id}>
-                    <div className="flag-card-meta">{f.slide_title || "Unknown slide"} · {f.student_name || "Student"} · {new Date(f.created_at).toLocaleDateString()}</div>
-                    <div className="flag-card-question">"{f.question}"</div>
-                    {f.ai_answer && <div className="flag-card-answer">AI said: {f.ai_answer}</div>}
-                    <button className="nav-btn" onClick={() => markResolved(f.id)}><CheckCircle2 size={13} /> Mark resolved</button>
-                  </div>
+                  <FlagReviewCard key={f.id} f={f} onResolve={markResolved} onApprove={approveFlag} />
                 ))}
               </div>
             </div>
@@ -2505,6 +2618,7 @@ function CourseInsightsScreen({ course, session, onBack }) {
                   <div className="flag-card resolved" key={f.id}>
                     <div className="flag-card-meta">{f.slide_title || "Unknown slide"} · {f.student_name || "Student"} · {new Date(f.created_at).toLocaleDateString()}</div>
                     <div className="flag-card-question">"{f.question}"</div>
+                    {f.lecturer_answer && <div className="flag-card-answer">Your answer (used by the AI lecturer): {f.lecturer_answer}</div>}
                   </div>
                 ))}
               </div>
@@ -2583,6 +2697,12 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
   // ---- learning analytics: append-only event log (never for lecturer previews)
   const sessionIdRef = useRef(makeId("session"));
+  const correctionsRef = useRef([]); // lecturer-approved answers for this module
+  useEffect(() => {
+    let cancelled = false;
+    fetchModuleCorrections(moduleId).then((r) => { if (!cancelled) correctionsRef.current = r; });
+    return () => { cancelled = true; };
+  }, [moduleId]);
   const trackedSlideRef = useRef(null);
   const focusIdRef = useRef(null);
   const slideInfo = (i) => ({ index: i, key: slideKeyFor(curriculum.slides[i] || {}, i) });
@@ -3187,7 +3307,9 @@ Write "answer" to be spoken aloud (about ${answerBudget} words). If confidence i
 
 ${NATURAL_SPEECH_STYLE}`;
       const prompt = `You were covering this slide (teaching notes: ${slide.notes}). Everything that was on screen:\n${slideToPlainContext(slide)}\n\nThe student asks: "${questionText}"\nAnswer so it can be spoken aloud: say maths in words, never read LaTeX or code symbols out letter by letter.`;
-      const answerPromise = askLecturer(system, prompt, fallbackAnswer, "qa");
+      // The lecturer teaches the AI: a matching approved answer is handed to the AI lecturer to base its reply on
+      const picked = pickCorrections(questionText, correctionsRef.current);
+      const answerPromise = askLecturer(system + correctionsPromptBlock(picked), prompt, fallbackAnswer, "qa");
 
       await ackPromise;
       if (!mountedRef.current) return;
@@ -3197,7 +3319,7 @@ ${NATURAL_SPEECH_STYLE}`;
       const { confidence, answer: safeAnswer } = parseAnswerJSON(rawAnswer, fallbackAnswer);
 
       addMessage("lecturer", safeAnswer, confidence === "low" ? "answer-flagged" : "answer");
-      track("ai_answer", currentInfo(), { confidence, chars: safeAnswer.length });
+      track("ai_answer", currentInfo(), { confidence, chars: safeAnswer.length, used_correction: picked.length > 0 });
       if (confidence === "low") {
         track("flag", currentInfo(), null);
         flagQuestionForLecturer(courseId, moduleId, studentName, questionText, safeAnswer, slide.title);
