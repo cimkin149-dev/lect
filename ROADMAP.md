@@ -62,6 +62,12 @@ Beta-Bernoulli estimate with recency decay, guesses counting half and confident-
 history page shows strengths, "revise first" and whether their confidence is well calibrated. Verified with live database tests (breakdown
 aggregation, per-lecturer isolation, approval flow, length limits, no leakage of student wording/names).
 
+v1.7.1 (11 Oct 2026): **Bigger slide display.** The lecture room no longer has a 720px height cap (it uses the full window, `100dvh`);
+padding above/below the slide, in the top bar, the column and the control bar was cut by about half; "Prev / status / Next" and "How is this going?"
+now share one row; a real **Full screen** button hides the browser's own toolbars; the code editor fills all the height the stage has and
+scrolls only inside itself; diagrams and plots scale to the available height instead of forcing a scroll. `.tests/t_layout.mjs` guards the
+numbers so the layout can't quietly regress.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

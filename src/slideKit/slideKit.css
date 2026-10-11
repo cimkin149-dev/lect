@@ -169,3 +169,21 @@ tr.sk-focus > th, tr.sk-focus > td { background: rgba(232, 163, 61, 0.12); }
 .mastery-fill.developing { background: #E8A33D; }
 .mastery-fill.weak { background: #E0735A; }
 .mastery-note { font-size: 11.5px; color: #8890A0; }
+
+/* Bigger display: diagrams/plots scale to the available height instead of forcing a scroll */
+.sk-diagram { padding: 8px; }
+.sk-diagram svg { max-width: 100%; max-height: calc(100dvh - 300px); min-height: 160px; width: auto; height: auto; margin: 0 auto; display: block; }
+.sk-plot svg { width: 100%; max-height: calc(100dvh - 300px); }
+.sk-visual { min-width: 0; }
+.sk-formulas { margin-top: 12px; gap: 8px; }
+.sk-formula { padding: 6px 14px; }
+.sk-worked { gap: 10px; }
+.sk-steps { gap: 6px; }
+.sk-step { padding: 6px 12px; }
+.sk-problem, .sk-final { padding: 10px 14px; }
+.check-card { margin-top: 12px; padding: 12px 14px; }
+/* code pane: fills the stage; the editor body gets whatever the caption/output don't need */
+.sk-ide { flex: 1 1 auto; min-height: 0; height: auto; gap: 8px; }
+.sk-ide-body { flex: 1 1 auto; min-height: 140px; padding: 8px 0; }
+.sk-output pre { max-height: 22dvh; overflow: auto; }
+.sk-step-caption { padding: 8px 12px; }

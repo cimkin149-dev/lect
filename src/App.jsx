@@ -2673,6 +2673,19 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [sessionComplete, setSessionComplete] = useState(false);
   const [presentationMode, setPresentationMode] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const canFullscreen = typeof document !== "undefined" && !!document.fullscreenEnabled;
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggleFullscreen = () => {
+    try {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen();
+    } catch (e) { /* not supported or blocked: ignore */ }
+  };
   const [notesStatus, setNotesStatus] = useState("idle"); // idle | generating | error
   const [notesProgress, setNotesProgress] = useState("");
 
@@ -3596,6 +3609,11 @@ ${NATURAL_SPEECH_STYLE}`;
           <button className={`topbar-edit ${presentationMode ? "on" : ""}`} onClick={togglePresentationMode} title="Toggle presentation mode (bigger slide view)" aria-pressed={presentationMode}>
             {presentationMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />} {presentationMode ? "Exit presentation" : "Presentation mode"}
           </button>
+          {canFullscreen && (
+            <button className={`topbar-edit ${isFullscreen ? "on" : ""}`} onClick={toggleFullscreen} title="Full screen hides the browser's own toolbars, giving the slide more room" aria-pressed={isFullscreen}>
+              ⛶ {isFullscreen ? "Exit full screen" : "Full screen"}
+            </button>
+          )}
           {role === "lecturer" && onEditSession && (
             <button className="topbar-edit" onClick={onEditSession} title="Edit session settings">
               <Settings2 size={13} /> Edit session
@@ -3690,6 +3708,7 @@ ${NATURAL_SPEECH_STYLE}`;
             )}
           </div>
 
+          <div className="control-strip">
           <div className="stage-actions">
             <button className="nav-btn" disabled={slideIndex === 0} onClick={() => changeSlide(-1)}>
               <ChevronLeft size={16} /> Prev
@@ -3714,6 +3733,7 @@ ${NATURAL_SPEECH_STYLE}`;
               ))}
             </div>
           )}
+          </div>
 
           {sessionComplete && (
             <div className="complete-banner">
@@ -4244,8 +4264,8 @@ function GlobalStyles() {
 
       /* Room shell — fixed to the viewport height, nothing here should grow
          the outer page. Only .stage and .side-messages scroll internally. */
-      .room { height: 100vh; max-height: 720px; display: flex; flex-direction: column; overflow: hidden; }
-      .topbar { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-bottom: 1px solid #232A34; font-size: 13px; }
+      .room { height: 100vh; height: 100dvh; max-height: none; display: flex; flex-direction: column; overflow: hidden; }
+      .topbar { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 6px 14px; border-bottom: 1px solid #232A34; font-size: 13px; }
       .topbar-title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
       .topbar-right { display: flex; align-items: center; gap: 12px; }
       .dot-live { width: 7px; height: 7px; border-radius: 50%; background: #E8A33D; box-shadow: 0 0 0 3px rgba(232,163,61,0.2); }
@@ -4259,9 +4279,9 @@ function GlobalStyles() {
       .tts-notice.clickable { cursor: pointer; text-decoration: underline; }
 
       .body { flex: 1 1 auto; display: flex; overflow: hidden; min-height: 0; }
-      .main-col { flex: 1; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; min-width: 0; min-height: 0; transition: padding 0.25s ease; }
+      .main-col { flex: 1; display: flex; flex-direction: column; padding: 8px 12px; gap: 8px; min-width: 0; min-height: 0; transition: padding 0.25s ease; }
 
-      .tiles { flex: 0 0 auto; display: flex; gap: 10px; height: 90px; transition: opacity 0.2s ease; }
+      .tiles { flex: 0 0 auto; display: flex; gap: 10px; height: 62px; transition: opacity 0.2s ease; }
       .tile { flex: 1; max-width: 220px; background: #1E2530; border-radius: 12px; border: 1px solid #232A34; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; position: relative; transition: border-color 0.2s, box-shadow 0.2s; }
       .tile.speaking { border-color: #E8A33D; box-shadow: 0 0 0 2px rgba(232,163,61,0.25); }
       .avatar { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; }
@@ -4274,16 +4294,16 @@ function GlobalStyles() {
       .stage-switch button.active { background: #232A34; color: #EDEFF2; border-color: #37404D; }
       .stage-switch button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-      .stage { flex: 1 1 auto; background: #1E2530; border: 1px solid #232A34; border-radius: 14px; padding: 36px 44px; overflow-y: auto; min-height: 0; transition: padding 0.25s ease; display: flex; flex-direction: column; scroll-behavior: auto; }
+      .stage { flex: 1 1 auto; background: #1E2530; border: 1px solid #232A34; border-radius: 12px; padding: 16px 26px; overflow-y: auto; min-height: 0; transition: padding 0.25s ease; display: flex; flex-direction: column; scroll-behavior: auto; }
       /* Safe centering: auto margins centre a short slide, but collapse to 0 when the slide is taller than the stage, so the TOP is always reachable (justify-content:center cut it off). */
       .stage > .slide, .stage > .ide { margin-block: auto; }
       .stage:focus-visible { outline: 2px solid #E8A33D; outline-offset: -2px; }
       .follow-pill { position: sticky; bottom: 4px; align-self: center; flex: 0 0 auto; background: #E8A33D; color: #1B1408; border: none; border-radius: 999px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; box-shadow: 0 6px 18px rgba(0,0,0,0.45); z-index: 6; }
-      .slide-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #E8A33D; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px; display: flex; justify-content: space-between; }
-      .slide h2 { font-family: 'Space Grotesk', sans-serif; font-size: 30px; margin: 0 0 22px; line-height: 1.25; transition: font-size 0.25s ease; }
-      .slide ul { margin: 0; padding-left: 22px; color: #C7CCD4; line-height: 2; font-size: 16px; transition: font-size 0.25s ease; }
-      .slide ul li { margin-bottom: 10px; }
-      .slide-detail { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid #2A313C; color: #9AA2AF; font-size: 14.5px; line-height: 1.8; }
+      .slide-eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #E8A33D; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; display: flex; justify-content: space-between; }
+      .slide h2 { font-family: 'Space Grotesk', sans-serif; font-size: 28px; margin: 0 0 14px; line-height: 1.25; transition: font-size 0.25s ease; }
+      .slide ul { margin: 0; padding-left: 22px; color: #C7CCD4; line-height: 1.8; font-size: 16px; transition: font-size 0.25s ease; }
+      .slide ul li { margin-bottom: 7px; }
+      .slide-detail { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid #2A313C; color: #9AA2AF; font-size: 14.5px; line-height: 1.8; }
       .paused-ribbon { margin-top: 18px; padding: 8px 12px; background: rgba(232,163,61,0.12); border: 1px solid rgba(232,163,61,0.35); color: #E8A33D; font-size: 12px; border-radius: 8px; }
 
       /* Presentation mode: tiles hidden, everything else scales up so the
@@ -4291,15 +4311,17 @@ function GlobalStyles() {
          chat-app content pane. Toggled from the topbar; chat can still be
          reopened independently via the controlbar without leaving it. */
       .room.presentation .tiles { display: none; }
-      .room.presentation .main-col { padding: 22px 48px; }
-      .room.presentation .stage { padding: 44px 90px 56px; }
+      .room.presentation .main-col { padding: 8px 20px; }
+      .room.presentation .stage { padding: 20px 56px 28px; }
       .room.presentation .slide-eyebrow { font-size: 13px; }
-      .room.presentation .slide h2 { font-size: 46px; margin-bottom: 32px; }
-      .room.presentation .slide ul { font-size: 22px; line-height: 2.15; }
-      .room.presentation .slide ul li { margin-bottom: 16px; }
-      .room.presentation .slide-detail { font-size: 18px; margin-top: 24px; padding-top: 20px; }
+      .room.presentation .slide h2 { font-size: 40px; margin-bottom: 18px; }
+      .room.presentation .slide ul { font-size: 22px; line-height: 1.85; }
+      .room.presentation .slide ul li { margin-bottom: 11px; }
+      .room.presentation .slide-detail { font-size: 18px; margin-top: 16px; padding-top: 14px; }
 
       .ide { display: flex; flex-direction: column; height: 100%; }
+      /* the code editor takes ALL the height the stage has (it scrolls internally only if the program is longer) */
+      .stage > .ide { flex: 1 1 0; min-height: 0; margin-block: 0; }
       .ide-bar { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8B93A1; margin-bottom: 10px; border-bottom: 1px solid #232A34; padding-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
       .live-tag { display: flex; align-items: center; gap: 5px; color: #E8A33D; font-size: 11px; }
       .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #E8A33D; animation: pulse 1s ease-in-out infinite; }
@@ -4310,8 +4332,9 @@ function GlobalStyles() {
       .tok-string { color: #E8A33D; }
       .tok-comment { color: #8890A0; font-style: italic; }
 
-      .stage-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
-      .nav-btn { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-radius: 8px; border: 1px solid #232A34; background: #1A1F27; color: #C7CCD4; font-size: 12px; cursor: pointer; }
+      .control-strip { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+      .stage-actions { flex: 1 1 320px; min-width: 0; display: flex; align-items: center; gap: 10px; }
+      .nav-btn { display: flex; align-items: center; gap: 4px; padding: 6px 11px; border-radius: 8px; border: 1px solid #232A34; background: #1A1F27; color: #C7CCD4; font-size: 12px; cursor: pointer; }
       .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
       .explain-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; border-radius: 8px; border: none; background: #2F6F4F; color: #EDEFF2; font-weight: 600; font-size: 13px; cursor: pointer; }
       .explain-btn:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -4344,7 +4367,7 @@ function GlobalStyles() {
       .side-input button { padding: 9px 10px; border-radius: 8px; border: none; background: #2F6F4F; color: #EDEFF2; cursor: pointer; }
       .side-input button:disabled { background: #2A313C; color: #8890A0; }
 
-      .controlbar { flex: 0 0 auto; display: flex; justify-content: center; gap: 10px; padding: 14px; border-top: 1px solid #232A34; }
+      .controlbar { flex: 0 0 auto; display: flex; justify-content: center; gap: 10px; padding: 8px 12px; border-top: 1px solid #232A34; }
       .ctrl { width: 40px; height: 40px; border-radius: 10px; border: 1px solid #232A34; background: #1A1F27; color: #8B93A1; display: flex; align-items: center; justify-content: center; cursor: pointer; }
       .ctrl.labeled { width: auto; padding: 0 16px; gap: 7px; font-size: 13px; font-weight: 600; }
       .ctrl.on { background: #232A34; color: #EDEFF2; }
