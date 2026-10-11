@@ -4,6 +4,7 @@ import SlideView from "../../src/slideKit/SlideView.jsx";
 import CodePane from "../../src/slideKit/CodePane.jsx";
 import CheckCard from "../../src/slideKit/CheckCard.jsx";
 import MasteryPanel from "../../src/learning/MasteryPanel.jsx";
+import PracticePanel from "../../src/learning/PracticePanel.jsx";
 import FlagReviewCard from "../../src/learning/FlagReviewCard.jsx";
 import { ConceptTable, MisconceptionList } from "../../src/learning/ClassInsights.jsx";
 import { newCheckState, chooseOption, finishCheck } from "../../src/slideKit/checkFlow.js";
@@ -92,5 +93,13 @@ const ml = renderToStaticMarkup(<MisconceptionList items={[{ slideIndex: 2, conc
 t("misconception list names the wrong answer, share and the 'very sure' signal", ml.includes("Slide 3") && ml.includes("Variables") && ml.includes("Integer") && ml.includes("75%") && ml.includes("firmly held mistake"));
 const fr = renderToStaticMarkup(<FlagReviewCard f={{ id: "f1", slide_title: "Types", student_name: "Sam", created_at: "2026-10-01T00:00:00Z", question: "what is autoboxing", ai_answer: "not sure" }} onResolve={noop} onApprove={noop} />);
 t("flag card offers BOTH 'write the correct answer' and 'mark resolved'", fr.includes("Write the correct answer") && fr.includes("Mark resolved") && fr.includes("AI said: not sure"));
+// ---- phase C components
+const NOWMS = Date.UTC(2026, 9, 10);
+const due = renderToStaticMarkup(<MasteryPanel now={NOWMS} onPractice={noop} mastery={[{ concept: "pointers", mastery: 0.3, n: 4, level: "weak", trend: "steady", lastAt: NOWMS - 3 * 86400000 }, { concept: "loops", mastery: 0.9, n: 5, level: "strong", trend: "steady", lastAt: NOWMS - 86400000 }]} revise={[]} calibration={{ level: "unknown" }} />);
+t("mastery panel shows 'due for revision now' for weak, a countdown for strong, and a Practise button", due.includes("due for revision now") && due.includes("revise again in 13 days") && (due.match(/Practise this/g) || []).length === 2);
+t("no Practise button when practice isn't available", !renderToStaticMarkup(<MasteryPanel now={NOWMS} mastery={[{ concept: "x", mastery: 0.6, n: 2, level: "developing", trend: "steady", lastAt: NOWMS }]} />).includes("Practise this"));
+const pq = [{ question: "Q one?", options: ["a", "b", "c", "d"], answer: 2, explanation: "Because c.", concept: "pointers" }, { question: "Q two?", options: ["a", "b", "c", "d"], answer: 0, explanation: "Because a.", concept: "pointers" }];
+const pp = renderToStaticMarkup(<PracticePanel concept="pointers" questions={pq} onAnswer={noop} onClose={noop} />);
+t("practice panel: names the concept, progress, says the questions are AI-written, shows the first question", pp.includes("Practice: pointers") && pp.includes("question 1 of 2") && pp.includes("AI-written revision questions") && pp.includes("Q one?") && !pp.includes("Q two?"));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

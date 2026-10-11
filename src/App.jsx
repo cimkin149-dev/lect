@@ -12,7 +12,7 @@ import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
 import { scrollTopForBlock } from "./slideKit/scroll.js";
 import { extractBlocks, matchSentenceToBlock } from "./slideKit/focus.js";
 import { logTiming, getTimingSummary } from "./telemetry.js";
-import { startTracking, track, flushEvents, stopTracking, getStudentKey, slideKeyFor } from "./analytics.js";
+import { startTracking, track, flushEvents, stopTracking, getStudentKey, slideKeyFor, postStandaloneEvents } from "./analytics.js";
 import { attentionScore, heatLevel, whyFlagged, formatDwell } from "./slideKit/insights.js";
 import CheckCard from "./slideKit/CheckCard.jsx";
 import { estimateMastery, calibration as studentCalibration, conceptsToRevise } from "./learning/mastery.js";
@@ -20,6 +20,9 @@ import { summarizeBreakdown, commonMisconceptions, weakConcepts } from "./learni
 import { pickCorrections, correctionsPromptBlock } from "./learning/corrections.js";
 import { ConceptTable, MisconceptionList } from "./learning/ClassInsights.jsx";
 import MasteryPanel from "./learning/MasteryPanel.jsx";
+import PracticePanel from "./learning/PracticePanel.jsx";
+import { planForSlide, adaptationPrompt, adaptWordBudget, adaptationLabel, emptySession, conceptsMatch, EXPLAIN_REQUESTS } from "./learning/adaptation.js";
+import { generatePractice } from "./learning/practice.js";
 import FlagReviewCard from "./learning/FlagReviewCard.jsx";
 import { newCheckState, chooseOption as chooseCheckState, finishCheck as finishCheckState, skipCheck as skipCheckState, feedbackSpeech } from "./slideKit/checkFlow.js";
 import {
@@ -500,12 +503,12 @@ async function approveFlaggedQuestion(flagId, question, answer, accessToken) {
 // A student's own quiz answers (row-level security returns only their own).
 async function fetchMyCheckEvents(studentId, accessToken) {
   const rows = await supabaseRequest(
-    `/learning_events?student_id=eq.${encodeURIComponent(studentId)}&event_type=eq.check_answer&select=created_at,payload&order=created_at.asc&limit=2000`,
+    `/learning_events?student_id=eq.${encodeURIComponent(studentId)}&event_type=in.(check_answer,practice_answer)&select=created_at,module_id,course_id,payload&order=created_at.asc&limit=2000`,
     {},
     accessToken
   );
   return (Array.isArray(rows) ? rows : [])
-    .map((r) => ({ concept: r.payload && r.payload.concept, correct: r.payload && (r.payload.correct === true || r.payload.correct === "true"), confidence: r.payload && r.payload.confidence, ts: Date.parse(r.created_at) }))
+    .map((r) => ({ concept: r.payload && r.payload.concept, correct: r.payload && (r.payload.correct === true || r.payload.correct === "true"), confidence: r.payload && r.payload.confidence, ts: Date.parse(r.created_at), moduleId: r.module_id, courseId: r.course_id }))
     .filter((e) => e.concept && typeof e.correct === "boolean");
 }
 
@@ -2187,11 +2190,13 @@ function AIHealthPanel({ session }) {
   );
 }
 
-function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
+function MyHistoryScreen({ session, courses, onBack, onAccountDeleted, onOpenLegal }) {
   const [sessions, setSessions] = useState(null);
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
-  const [learning, setLearning] = useState(null); // { mastery, revise, calibration }
+  const [learning, setLearning] = useState(null); // { mastery, revise, calibration, events }
+  const [practice, setPractice] = useState(null); // { concept, loading | questions | error, courseId, moduleId, sessionId }
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -2199,11 +2204,39 @@ function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
       .then((events) => {
         if (cancelled) return;
         const mastery = estimateMastery(events);
-        setLearning({ mastery, revise: conceptsToRevise(mastery, 3), calibration: studentCalibration(events) });
+        setLearning({ mastery, revise: conceptsToRevise(mastery, 3), calibration: studentCalibration(events), events });
       })
-      .catch(() => { if (!cancelled) setLearning({ mastery: [], revise: [], calibration: { level: "unknown" } }); });
+      .catch(() => { if (!cancelled) setLearning({ mastery: [], revise: [], calibration: { level: "unknown" }, events: [] }); });
     return () => { cancelled = true; };
-  }, [session]);
+  }, [session, reloadTick]);
+
+  // Revision practice: AI-written questions grounded in the lecture that taught the concept
+  const startPractice = async (c) => {
+    const last = [...((learning && learning.events) || [])].reverse().find((e) => e.concept === c.concept);
+    const course = (courses || []).find((co) => last && co.id === last.courseId);
+    const mod = course && (course.modules || []).find((m) => m.id === last.moduleId);
+    setPractice({ concept: c.concept, loading: true });
+    try {
+      const questions = await generatePractice({
+        concept: c.concept,
+        slides: mod ? (mod.slides || []).map((sl, i) => normalizeSlide(sl, i)) : [],
+        callAI: (sys, pr, mt) => callAI(sys, pr, mt, undefined, "practice"),
+      });
+      setPractice({ concept: c.concept, questions, courseId: last && last.courseId, moduleId: last && last.moduleId, sessionId: makeId("practice") });
+    } catch (e) {
+      setPractice({ concept: c.concept, error: e.message || "Couldn't make practice questions just now." });
+    }
+  };
+  const recordPractice = (event) => {
+    if (!practice || !practice.moduleId || !practice.courseId) return;
+    let consent = false;
+    try { consent = localStorage.getItem("semai_research_consent") === "1"; } catch (e) { /* ignore */ }
+    postStandaloneEvents({ url: SUPABASE_URL, key: SUPABASE_ANON_KEY }, [{
+      client_ts: new Date().toISOString(), session_id: practice.sessionId, course_id: practice.courseId, module_id: practice.moduleId,
+      student_id: session.user.id, student_key: getStudentKey(), research_consent: consent, slide_index: null, slide_key: null,
+      event_type: "practice_answer", payload: { concept: practice.concept, correct: event.correct, option: event.option, confidence: event.confidence, time_ms: event.time_ms },
+    }], session.accessToken);
+  };
 
   useEffect(() => {
     fetchMySessions(session.user.id, session.accessToken)
@@ -2228,7 +2261,15 @@ function MyHistoryScreen({ session, onBack, onAccountDeleted, onOpenLegal }) {
       <section className="account-panel" style={{ marginTop: 0, borderTop: "none" }} aria-labelledby="learned-heading">
         <h2 id="learned-heading" className="account-title">What I've learned</h2>
         <p className="account-text">Built from your answers to the quick quiz questions. Recent answers count most, and a confident wrong answer counts more than an honest guess, because those are the mistakes worth fixing. Your lecturer sees class-wide results only.</p>
-        {learning === null ? <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div> : <MasteryPanel mastery={learning.mastery} revise={learning.revise} calibration={learning.calibration} />}
+        {practice && practice.loading && <div className="empty-hint"><Loader2 className="spin" size={14} /> Writing practice questions for “{practice.concept}”…</div>}
+        {practice && practice.error && <div className="setup-error"><AlertTriangle size={13} /> {practice.error} <button className="skip-link inline" onClick={() => setPractice(null)}>Close</button></div>}
+        {practice && practice.questions ? (
+          <PracticePanel concept={practice.concept} questions={practice.questions} onAnswer={recordPractice} onClose={() => { setPractice(null); setReloadTick((n) => n + 1); }} />
+        ) : learning === null ? (
+          <div className="empty-hint"><Loader2 className="spin" size={14} /> Loading…</div>
+        ) : (
+          <MasteryPanel mastery={learning.mastery} revise={learning.revise} calibration={learning.calibration} onPractice={startPractice} />
+        )}
       </section>
 
       {sessions === null ? (
@@ -2656,6 +2697,19 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [activeCheck, setActiveCheck] = useState(null);
   const checkResolverRef = useRef(null);
   const [signals, setSignals] = useState({}); // slide index -> "got_it" | "unsure" | "lost"
+  // ---- adaptive lecturing: what do we know about this learner, and is personalisation on?
+  const [adaptOn, setAdaptOn] = useState(() => {
+    try { return localStorage.getItem("semai_adapt") !== "0"; } catch (e) { return true; }
+  });
+  const adaptOnRef = useRef(adaptOn);
+  const [adaptNote, setAdaptNote] = useState(null); // { text, reason } shown beside the controls
+  const historyRef = useRef([]); // quiz answers from earlier sessions (signed-in students only)
+  const historyPromiseRef = useRef(null);
+  const sessionEvidenceRef = useRef([]); // quiz answers during THIS session (everyone)
+  const sessionAdaptRef = useRef(emptySession());
+  const planLevelRef = useRef({});
+  const lastEvidenceKeyRef = useRef("");
+  const masteryNow = () => estimateMastery([...historyRef.current, ...sessionEvidenceRef.current]);
   // The slide area scrolls to follow the lecturer; scrolling by hand pauses that.
   const stageRef = useRef(null);
   const [speakProgress, setSpeakProgress] = useState({ slide: -1, i: 0, n: 1, text: "" });
@@ -2710,6 +2764,18 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
   // ---- learning analytics: append-only event log (never for lecturer previews)
   const sessionIdRef = useRef(makeId("session"));
+  useEffect(() => {
+    adaptOnRef.current = adaptOn;
+    try { localStorage.setItem("semai_adapt", adaptOn ? "1" : "0"); } catch (e) { /* ignore */ }
+    if (!adaptOn) setAdaptNote(null);
+  }, [adaptOn]);
+  useEffect(() => {
+    if (!studentSession || role === "lecturer") return;
+    historyPromiseRef.current = fetchMyCheckEvents(studentSession.user.id, studentSession.accessToken)
+      .then((ev) => { historyRef.current = ev; })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const correctionsRef = useRef([]); // lecturer-approved answers for this module
   useEffect(() => {
     let cancelled = false;
@@ -3033,8 +3099,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   }, []);
 
   const generateExplanation = useCallback(
-    async (targetSlide) => {
-      const system = `You are ${lecturerIdentity}. You are mid-lecture, speaking out loud to a room of students. Keep this explanation to about ${wordBudget} words. ${NATURAL_SPEECH_STYLE}`;
+    async (targetSlide, plan) => {
+      const system = `You are ${lecturerIdentity}. You are mid-lecture, speaking out loud to a room of students. Keep this explanation to about ${adaptWordBudget(plan, wordBudget)} words. ${NATURAL_SPEECH_STYLE}`;
       const followAlong = " Walk through the on-screen points in the order they appear on the slide, and use the slide's own key words for each point, so students can follow along as you speak.";
       const detailContext = followAlong + (targetSlide.detail ? ` On-screen supporting text: ${targetSlide.detail}` : "") +
         (targetSlide.diagram || targetSlide.plot || targetSlide.table || targetSlide.definition || targetSlide.formulas
@@ -3043,7 +3109,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const prompt = targetSlide.hasCode
         ? `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext} You are about to type this code live on screen while you talk: ${targetSlide.code} Narrate it roughly in the order it will be typed, top to bottom, like you're writing it in front of the class.`
         : `Current slide: "${targetSlide.title}". Teaching notes: ${targetSlide.notes}${detailContext}`;
-      return askLecturer(system, prompt, "Sorry, I lost my train of thought for a moment — let's continue.", "explain");
+      return askLecturer(system, prompt + adaptationPrompt(plan), "Sorry, I lost my train of thought for a moment — let's continue.", "explain");
     },
     [lecturerIdentity, wordBudget, askLecturer]
   );
@@ -3059,9 +3125,32 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const targetSlide = curriculum.slides[index];
       setViewMode(targetSlide.hasCode ? "ide" : "slides");
       setLecturerState2("loading");
-      const structuredUnits = buildStructuredUnits(targetSlide);
+
+      // How should THIS slide be taught to THIS student right now? (never skips content or changes assessment)
+      const plan = planForSlide({ slide: targetSlide, slideIndex: index, mastery: masteryNow(), session: sessionAdaptRef.current, enabled: adaptOnRef.current });
+      planLevelRef.current[index] = plan.level;
+      if (plan.applied) {
+        setAdaptNote(adaptationLabel(plan));
+        if (plan.reminder) sessionAdaptRef.current.reminded.add(plan.reminder);
+        track("adapt_applied", slideInfo(index), { level: plan.level, reminder: !!plan.reminder, concept: plan.concept });
+      } else {
+        setAdaptNote(null);
+      }
+
+      let structuredUnits = buildStructuredUnits(targetSlide);
+      if (structuredUnits && plan.reminder) {
+        // scripted slides can't be re-narrated, so the prerequisite reminder is spoken first
+        const line = await askLecturer(
+          `You are ${lecturerIdentity}. ${NATURAL_SPEECH_STYLE}`,
+          `In one short sentence, remind the students of "${plan.reminder}" in plain words, as a quick refresher because the next slide builds on it.`,
+          `Quick reminder: ${plan.reminder} is the idea we're building on here.`,
+          "recap"
+        );
+        if (!mountedRef.current) return;
+        structuredUnits = [{ say: line, reveal: 0, lines: null }, ...structuredUnits];
+      }
       const isWalkthrough = !!(targetSlide.hasCode && targetSlide.codeSteps && targetSlide.codeSteps.length);
-      const explanation = structuredUnits ? structuredUnits.map((u) => u.say).join(" ") : await generateExplanation(targetSlide);
+      const explanation = structuredUnits ? structuredUnits.map((u) => u.say).join(" ") : await generateExplanation(targetSlide, plan);
       if (!mountedRef.current) return;
       addMessage("lecturer", explanation, "explain");
       setLecturerState2("explaining");
@@ -3191,7 +3280,14 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       50,
       Math.round(wordBudget * 0.7)
     )} words. ${NATURAL_SPEECH_STYLE}`;
-    const prompt = `Course: ${curriculum.code} — ${curriculum.title}. Today's topics in order: ${curriculum.slides.map((s) => s.title).join(", ")}.`;
+    await Promise.race([historyPromiseRef.current || Promise.resolve(), sleep(1500)]);
+    let personal = "";
+    if (adaptOnRef.current) {
+      const moduleConcepts = [...new Set(curriculum.slides.flatMap((s) => [...(s.concepts || []), ...(s.prerequisites || [])]))];
+      const rel = conceptsToRevise(masteryNow(), 3).filter((c) => moduleConcepts.some((m) => conceptsMatch(m, c.concept))).map((c) => c.concept);
+      if (rel.length) personal = ` Also tell the student, in one friendly sentence, that you will give a quick reminder where ${rel.join(" and ")} come up, since those were tricky before. Do not mention scores or percentages.`;
+    }
+    const prompt = `Course: ${curriculum.code} — ${curriculum.title}. Today's topics in order: ${curriculum.slides.map((s) => s.title).join(", ")}.${personal}`;
     const text = await askLecturer(system, prompt, `Welcome, ${studentName}! Today we're covering ${curriculum.unit}.`, "welcome");
     if (!mountedRef.current) return;
     const safeText = text;
@@ -3452,7 +3548,13 @@ ${NATURAL_SPEECH_STYLE}`;
     setActiveCheck((c) => {
       const r = finishCheckState(c, confidence);
       if (!r.event) return c;
-      track("check_answer", slideInfo(c.index), r.event);
+      track("check_answer", slideInfo(c.index), { ...r.event, slide_type: curriculum.slides[c.index] && curriculum.slides[c.index].type, adapt_level: planLevelRef.current[c.index] || "standard" });
+      const evidenceKey = `${c.index}:${c.chosen}`;
+      if (lastEvidenceKeyRef.current !== evidenceKey) {
+        lastEvidenceKeyRef.current = evidenceKey;
+        sessionEvidenceRef.current.push({ concept: c.check.concept, correct: r.event.correct, confidence: r.event.confidence, ts: Date.now() });
+        if (!r.event.correct && c.check.concept) sessionAdaptRef.current.wrongConcepts.add(c.check.concept);
+      }
       const resolve = checkResolverRef.current;
       checkResolverRef.current = null;
       if (resolve) resolve(r.outcome);
@@ -3486,7 +3588,16 @@ ${NATURAL_SPEECH_STYLE}`;
     if (signals[slideIndex] === value) return;
     setSignals((s) => ({ ...s, [slideIndex]: value }));
     track("signal", currentInfo(), { value, focus: focusIdRef.current });
+    if (value === "lost") sessionAdaptRef.current.lostSlides.add(slideIndex);
     if (value === "lost") handleQuestion("I'm lost on this part. Could you explain it again in a simpler way, with a different example?");
+  };
+
+  // "Explain differently": the student asks for what helps (also logged: it tells us what kind of explanation each learner needs)
+  const requestDifferent = (kind) => {
+    const r = EXPLAIN_REQUESTS[kind];
+    if (!r) return;
+    track("adapt_request", currentInfo(), { kind });
+    handleQuestion(r.ask);
   };
 
   // Manual navigation always pauses autopilot — otherwise the AI-driven
@@ -3609,6 +3720,11 @@ ${NATURAL_SPEECH_STYLE}`;
           <button className={`topbar-edit ${presentationMode ? "on" : ""}`} onClick={togglePresentationMode} title="Toggle presentation mode (bigger slide view)" aria-pressed={presentationMode}>
             {presentationMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />} {presentationMode ? "Exit presentation" : "Presentation mode"}
           </button>
+          {role !== "lecturer" && (
+            <button className={`topbar-edit ${adaptOn ? "on" : ""}`} onClick={() => setAdaptOn((v) => !v)} aria-pressed={adaptOn} title="When on, the lecturer adapts explanations to how you're doing (more steps when you're finding something hard, shorter when you already know it). Turn it off for the standard lecture.">
+              ✨ Personalised: {adaptOn ? "on" : "off"}
+            </button>
+          )}
           {canFullscreen && (
             <button className={`topbar-edit ${isFullscreen ? "on" : ""}`} onClick={toggleFullscreen} title="Full screen hides the browser's own toolbars, giving the slide more room" aria-pressed={isFullscreen}>
               ⛶ {isFullscreen ? "Exit full screen" : "Full screen"}
@@ -3733,6 +3849,13 @@ ${NATURAL_SPEECH_STYLE}`;
               ))}
             </div>
           )}
+          {role !== "lecturer" && (
+            <select className="explain-select" aria-label="Ask the lecturer to explain this differently" value="" onChange={(e) => { if (e.target.value) requestDifferent(e.target.value); }}>
+              <option value="">Explain differently…</option>
+              {Object.entries(EXPLAIN_REQUESTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+            </select>
+          )}
+          {adaptNote && adaptOn && role !== "lecturer" && <span className="adapt-note" title={adaptNote.reason} role="status">✨ {adaptNote.text}. {adaptNote.reason}</span>}
           </div>
 
           {sessionComplete && (
@@ -4125,7 +4248,7 @@ export default function SEMAIApp() {
         <AuthScreen role="student" onAuthenticated={handleStudentAuthenticated} onBack={() => setStage("join")} onOpenLegal={openLegal} />
       )}
       {stage === "myHistory" && studentSession && (
-        <MyHistoryScreen session={studentSession} onBack={() => setStage("join")} onAccountDeleted={handleStudentAccountDeleted} onOpenLegal={openLegal} />
+        <MyHistoryScreen session={studentSession} courses={courses} onBack={() => setStage("join")} onAccountDeleted={handleStudentAccountDeleted} onOpenLegal={openLegal} />
       )}
       {stage === "room" && roomData && (
         <LectureRoom

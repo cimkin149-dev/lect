@@ -1,4 +1,4 @@
-import { startTracking, track, flushEvents, stopTracking, slideKeyFor, getStudentKey, _internals } from "../src/analytics.js";
+import { startTracking, track, flushEvents, stopTracking, slideKeyFor, getStudentKey, postStandaloneEvents, _internals } from "../src/analytics.js";
 let fail = 0;
 const t = (n, c, e) => { if (!c) { fail++; console.log("FAIL", n, e ?? ""); } else console.log("ok  ", n); };
 globalThis.window = { addEventListener() {}, removeEventListener() {} };
@@ -60,4 +60,13 @@ t("pseudonymous student key is random, persisted, reused", k1 === k2 && /^sk-/.t
 stopTracking(); track("slide_view", slide);
 t("track before start / after stop is a safe no-op", _internals.pending === 0);
 t("flush with nothing never throws", (await flushEvents()) === undefined);
+// --- standalone events (practice)
+calls.length = 0; script = [201];
+const sr = await postStandaloneEvents({ url: "https://x.supabase.co", key: "anon" }, [{ event_type: "practice_answer", student_id: "uid-1", payload: { concept: "c", correct: true } }], "user-jwt");
+t("standalone event posted with the student's token", calls.length === 1 && calls[0].auth === "Bearer user-jwt" && calls[0].rows[0].event_type === "practice_answer" && sr.status === 201);
+calls.length = 0; script = [401, 201];
+await postStandaloneEvents({ url: "https://x.supabase.co", key: "anon" }, [{ event_type: "practice_answer", student_id: "uid-1", payload: {} }], "expired");
+t("expired token: retried without the account link, not lost", calls.length === 2 && calls[1].rows[0].student_id === null && calls[1].auth === "Bearer anon");
+globalThis.fetch = async () => { throw new Error("offline"); };
+t("network failure never throws", (await postStandaloneEvents({ url: "u", key: "k" }, [{}], null)) === null);
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS"); process.exit(fail ? 1 : 0);

@@ -65,7 +65,7 @@ function normalizePlot(p) {
 
 // One multiple-choice comprehension check. Invalid checks (bad answer index, duplicate or too few options)
 // are dropped rather than shown, because a wrong "correct answer" would teach students the wrong thing.
-function normalizeCheck(c, fallbackConcept) {
+export function normalizeCheck(c, fallbackConcept) {
   if (!c || typeof c !== "object") return null;
   const question = text(c.question);
   const rawOptions = arr(c.options).map(text);

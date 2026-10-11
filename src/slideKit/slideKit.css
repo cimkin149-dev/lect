@@ -187,3 +187,9 @@ tr.sk-focus > th, tr.sk-focus > td { background: rgba(232, 163, 61, 0.12); }
 .sk-ide-body { flex: 1 1 auto; min-height: 140px; padding: 8px 0; }
 .sk-output pre { max-height: 22dvh; overflow: auto; }
 .sk-step-caption { padding: 8px 12px; }
+
+/* Phase C */
+.mastery-due { color: #F5D9A4; font-weight: 600; }
+.adapt-note { font-size: 12px; color: #F5D9A4; background: rgba(232,163,61,0.10); border: 1px solid rgba(232,163,61,0.35); border-radius: 999px; padding: 4px 12px; cursor: help; }
+.explain-select { background: #232C38; color: #C7CCD4; border: 1px solid #323D4B; border-radius: 999px; padding: 6px 10px; font-size: 12.5px; font-family: inherit; cursor: pointer; }
+.explain-select:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }

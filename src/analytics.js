@@ -127,3 +127,20 @@ export function stopTracking() {
 }
 
 export const _internals = { get pending() { return buffer.length; }, get sent() { return sent; } };
+
+// For events that happen outside a lecture room (e.g. revision practice on the history page).
+export async function postStandaloneEvents(c, rows, token) {
+  try {
+    const send = (r, tok) => fetch(`${c.url}/rest/v1/learning_events`, {
+      method: "POST",
+      keepalive: true,
+      headers: { apikey: c.key, Authorization: `Bearer ${tok || c.key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify(r),
+    });
+    let res = await send(rows, token);
+    if (res && (res.status === 401 || res.status === 403) && rows.some((r) => r.student_id)) res = await send(rows.map((r) => ({ ...r, student_id: null })), null);
+    return res;
+  } catch (e) {
+    return null;
+  }
+}

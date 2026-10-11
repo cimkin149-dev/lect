@@ -61,3 +61,12 @@ export function calibration(events) {
 export function conceptsToRevise(list, k = 3) {
   return (list || []).filter((c) => (c.level === "weak" || c.level === "developing" || c.trend === "slipping") && c.n >= 2).slice(0, k);
 }
+
+// Spaced revision: when should this concept come up again? Weak ideas return sooner than strong ones.
+const REVIEW_DAYS = { weak: 2, developing: 5, building: 3, strong: 14 };
+export function nextReview(c, now = Date.now()) {
+  const days = REVIEW_DAYS[c.level] ?? 5;
+  const base = c.lastAt || now;
+  const dueAt = base + days * DAY;
+  return { dueAt, due: now >= dueAt, inDays: Math.max(0, Math.ceil((dueAt - now) / DAY)) };
+}

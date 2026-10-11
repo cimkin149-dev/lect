@@ -68,6 +68,20 @@ now share one row; a real **Full screen** button hides the browser's own toolbar
 scrolls only inside itself; diagrams and plots scale to the available height instead of forcing a scroll. `.tests/t_layout.mjs` guards the
 numbers so the layout can't quietly regress.
 
+v1.8.0 (11 Oct 2026): **Analytics Phase C: adaptive lecturing.** The AI lecturer now teaches each slide according to the student's
+understanding (`src/learning/adaptation.js`): *simplify* (short sentences, terms defined, one everyday example, step by step) when a concept is
+weak/slipping in the student's history OR they missed a question / tapped "I'm lost" a moment ago (this session outweighs old history); *brisk*
+(about 60% of the usual words, one deeper insight) only when every concept is strong with >= 3 answers; and a one-sentence *reminder* of a weak
+prerequisite, once per session. Safeguards, all tested: it only changes HOW something is explained (never skips a slide or quiz, never affects
+assessment); every adaptation shows the student a plain-language reason; a "Personalised on/off" switch turns it all off; one old answer is
+never enough evidence; prompts contain instructions only (no names/scores). Students can also ask "Explain differently" (another example / step
+by step / go deeper / why it matters), logged as `adapt_request`. The welcome mentions what will be revisited. New events: `adapt_applied`,
+`adapt_request`, `practice_answer`; quiz answers now record `slide_type` and `adapt_level` so we can later ask "did adapting help?" (selection
+effects: weaker students get simplified explanations, so raw comparisons are confounded; an experiment would need randomisation + consent).
+**Revision practice + spaced revision:** history page shows when each concept is due again (weak 2 days, developing 5, strong 14) and a
+"Practise this" button: AI writes 4 questions grounded in the lecture that taught the concept (validated, answer positions shuffled),
+and practice answers count towards mastery.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 

@@ -1,10 +1,11 @@
 import React from "react";
+import { nextReview } from "./mastery.js";
 
 const LEVEL_LABEL = { strong: "Strong", developing: "Getting there", weak: "Needs work", building: "Building" };
 const TREND_LABEL = { improving: "↗ improving", slipping: "↘ slipping", steady: "" };
 
 // The student's own view: what they have mastered, what to revise, and how well their confidence matches reality.
-export default function MasteryPanel({ mastery, revise, calibration }) {
+export default function MasteryPanel({ mastery, revise, calibration, onPractice, now = Date.now() }) {
   if (!mastery || !mastery.length) {
     return <p className="account-text">Answer the quick quiz questions in lectures (while signed in) and your strengths will appear here.</p>;
   }
@@ -29,7 +30,11 @@ export default function MasteryPanel({ mastery, revise, calibration }) {
             <div className="mastery-bar" role="img" aria-label={`${c.concept}: ${c.level === "building" ? "not enough answers yet" : Math.round(c.mastery * 100) + " percent"}`}>
               <div className={`mastery-fill ${c.level}`} style={{ width: `${c.level === "building" ? 8 : Math.round(c.mastery * 100)}%` }} />
             </div>
-            <div className="mastery-note">{c.n} answer{c.n === 1 ? "" : "s"}{c.level === "building" ? " so far, keep going" : ""}</div>
+            <div className="mastery-note">
+              {c.n} answer{c.n === 1 ? "" : "s"}{c.level === "building" ? " so far, keep going" : ""}
+              {c.lastAt ? (() => { const r = nextReview(c, now); return r.due ? <span className="mastery-due"> · due for revision now</span> : <span> · revise again in {r.inDays} day{r.inDays === 1 ? "" : "s"}</span>; })() : null}
+              {onPractice && c.n >= 1 ? <button className="skip-link inline" style={{ marginLeft: 8 }} onClick={() => onPractice(c)}>Practise this</button> : null}
+            </div>
           </li>
         ))}
       </ul>
