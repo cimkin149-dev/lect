@@ -23,10 +23,11 @@ import MasteryPanel from "./learning/MasteryPanel.jsx";
 import PracticePanel from "./learning/PracticePanel.jsx";
 import { planForSlide, adaptationPrompt, adaptWordBudget, adaptationLabel, emptySession, conceptsMatch, EXPLAIN_REQUESTS } from "./learning/adaptation.js";
 import { generatePractice } from "./learning/practice.js";
+import { welcomeBackLine, createPauseTracker, breakNudgeDue, BREAK_NUDGE_TEXT, pauseHotspot, engagementSummary, focusRhythmText } from "./learning/pauses.js";
 import FlagReviewCard from "./learning/FlagReviewCard.jsx";
 import { newCheckState, chooseOption as chooseCheckState, finishCheck as finishCheckState, skipCheck as skipCheckState, feedbackSpeech } from "./slideKit/checkFlow.js";
 import {
-  Mic, MicOff, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
+  Pause, Play, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
   Sparkles, Trash2, ArrowRight, GraduationCap, Users, Settings2, RotateCcw,
   AlertTriangle, Clock, FileDown, Maximize2, Minimize2, Flag, CheckCircle2, Download, } from "lucide-react";
@@ -510,6 +511,16 @@ async function fetchMyCheckEvents(studentId, accessToken) {
   return (Array.isArray(rows) ? rows : [])
     .map((r) => ({ concept: r.payload && r.payload.concept, correct: r.payload && (r.payload.correct === true || r.payload.correct === "true"), confidence: r.payload && r.payload.confidence, ts: Date.parse(r.created_at), moduleId: r.module_id, courseId: r.course_id }))
     .filter((e) => e.concept && typeof e.correct === "boolean");
+}
+
+// A student's finished-session totals (their own only), for the focus-rhythm note.
+async function fetchMySessionTotals(studentId, accessToken) {
+  const rows = await supabaseRequest(
+    `/learning_events?student_id=eq.${encodeURIComponent(studentId)}&event_type=eq.session_end&select=payload&order=created_at.desc&limit=20`,
+    {},
+    accessToken
+  );
+  return (Array.isArray(rows) ? rows : []).map((r) => r.payload || {});
 }
 
 // AI advice for a slide that is confusing students (on demand; plain text).
@@ -2195,6 +2206,12 @@ function MyHistoryScreen({ session, courses, onBack, onAccountDeleted, onOpenLeg
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState(null);
   const [learning, setLearning] = useState(null); // { mastery, revise, calibration, events }
+  const [rhythm, setRhythm] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchMySessionTotals(session.user.id, session.accessToken).then((p) => { if (!cancelled) setRhythm(focusRhythmText(engagementSummary(p))); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [session]);
   const [practice, setPractice] = useState(null); // { concept, loading | questions | error, courseId, moduleId, sessionId }
   const [reloadTick, setReloadTick] = useState(0);
 
@@ -2270,6 +2287,7 @@ function MyHistoryScreen({ session, courses, onBack, onAccountDeleted, onOpenLeg
         ) : (
           <MasteryPanel mastery={learning.mastery} revise={learning.revise} calibration={learning.calibration} onPractice={startPractice} />
         )}
+        {rhythm && <p className="account-text" style={{ marginTop: 10 }}><strong>Your focus rhythm.</strong> {rhythm} Only you can see this.</p>}
       </section>
 
       {sessions === null ? (
@@ -2486,6 +2504,12 @@ function SlideAnalyticsPanel({ course, session }) {
                   </ul>
                 </div>
               )}
+              {scored.some((x) => x.r && pauseHotspot(x.r)) && (
+                <div className="sk-warnings" role="note" style={{ borderColor: "rgba(232,163,61,0.55)", background: "rgba(232,163,61,0.08)", color: "#F5D9A4" }}>
+                  <strong>Slides where many students pause</strong>
+                  <ul style={{ color: "#F5D9A4" }}>{scored.filter((x) => x.r && pauseHotspot(x.r)).map((x) => <li key={x.i} style={{ color: "#F5D9A4" }}>Slide {x.i + 1} “{x.sl.title}”: {pauseHotspot(x.r)}</li>)}</ul>
+                </div>
+              )}
               {weak.length > 0 && (
                 <div className="sk-warnings" role="note">
                   <strong>Concepts the class is finding hard</strong>
@@ -2495,7 +2519,7 @@ function SlideAnalyticsPanel({ course, session }) {
               <div className="sk-table-wrap">
                 <table className="sk-table" style={{ fontSize: 12.5 }}>
                   <thead>
-                    <tr><th scope="col">Slide</th><th scope="col">Students</th><th scope="col">Avg time</th><th scope="col">Quiz correct</th><th scope="col">Got it / Unsure / Lost</th><th scope="col">Questions</th><th scope="col">Needs attention</th></tr>
+                    <tr><th scope="col">Slide</th><th scope="col">Students</th><th scope="col">Avg time</th><th scope="col">Quiz correct</th><th scope="col">Got it / Unsure / Lost</th><th scope="col">Questions</th><th scope="col">Paused</th><th scope="col">Needs attention</th></tr>
                   </thead>
                   <tbody>
                     {scored.map(({ i, sl, r, sc, level }) => (
@@ -2506,6 +2530,7 @@ function SlideAnalyticsPanel({ course, session }) {
                         <td>{r && Number(r.checks) > 0 ? `${Math.round((Number(r.checks_correct) / Number(r.checks)) * 100)}% (${r.checks})` : "–"}</td>
                         <td>{r ? `${r.got_it} / ${r.unsure} / ${r.lost}` : "–"}</td>
                         <td>{r ? Number(r.questions) + Number(r.low_confidence > 0 ? 0 : 0) : "–"}</td>
+                        <td>{r && Number(r.viewers) > 0 ? `${r.manual_pausers || 0} of ${r.viewers}` : "–"}</td>
                         <td><span className={`heat heat-${level}`}>{sc === null ? "not enough data" : `${Math.round(sc * 100)}%`}</span></td>
                       </tr>
                     ))}
@@ -2682,7 +2707,16 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const [chatInput, setChatInput] = useState("");
   const [lecturerState, setLecturerState] = useState("idle"); // idle | explaining | answering | loading
   const [handRaised, setHandRaised] = useState(false);
-  const [micOn, setMicOn] = useState(false);
+  // ---- pause: the student can stop the lecture (to read slowly, take a call...). Tracked as rhythm, never as a score.
+  const [paused, setPaused] = useState(false);
+  const [pauseReason, setPauseReason] = useState("manual");
+  const [resuming, setResuming] = useState(false);
+  const pausedRef = useRef(false);
+  const resumingRef = useRef(false);
+  const pauseTrackerRef = useRef(createPauseTracker());
+  const focusStartRef = useRef(Date.now());
+  const lastNudgeRef = useRef(0);
+  const sessionCompleteRef = useRef(false);
   const [camOn, setCamOn] = useState(true);
   const [interrupted, setInterrupted] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -2935,9 +2969,10 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
   const animateTyping = useCallback((code, durationMs, startFrom = 0) => {
     if (typingIntervalRef.current) clearInterval(typingIntervalRef.current);
-    const start = performance.now();
+    let start = performance.now();
     const remainingLen = code.length - startFrom;
     typingIntervalRef.current = setInterval(() => {
+      if (pausedRef.current) { start += 40; return; } // time spent paused doesn't count towards the typing progress
       const elapsed = performance.now() - start;
       const progress = Math.min(1, elapsed / durationMs);
       setTypedCode(code.slice(0, startFrom + Math.floor(progress * remainingLen)));
@@ -2960,7 +2995,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const waitForIdle = () =>
     new Promise((resolve) => {
       const check = () => {
-        if (!mountedRef.current || stateRef.current === "idle") return resolve();
+        if (!mountedRef.current || (stateRef.current === "idle" && !pausedRef.current)) return resolve();
         setTimeout(check, 150);
       };
       check();
@@ -2994,7 +3029,11 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   // happened) — callers use that to decide whether to wait for the
   // resulting Q&A to finish before continuing.
   const speakInterruptible = useCallback(
-    async (text, { onDurationKnown, onStart } = {}) => {
+    async (text, { onDurationKnown, onStart, bypassPause } = {}) => {
+      if (!bypassPause) {
+        while (pausedRef.current && mountedRef.current) await new Promise((r) => setTimeout(r, 200));
+        if (!mountedRef.current) return false;
+      }
       const tSpeak = performance.now();
       let startLogged = false;
       const markStart = (provider, extra) => {
@@ -3125,6 +3164,18 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const targetSlide = curriculum.slides[index];
       setViewMode(targetSlide.hasCode ? "ide" : "slides");
       setLecturerState2("loading");
+
+      // After a long unbroken stretch, a gentle suggestion to rest (never forced, never repeated within another full stretch)
+      if (role !== "lecturer" && index > 0 && breakNudgeDue({ focusStartMs: focusStartRef.current, now: Date.now(), lastNudgeMs: lastNudgeRef.current })) {
+        lastNudgeRef.current = Date.now();
+        track("break_nudge", slideInfo(index), null);
+        addMessage("lecturer", BREAK_NUDGE_TEXT, "explain");
+        setLecturerState2("explaining");
+        const nudged = await speakInterruptible(BREAK_NUDGE_TEXT);
+        if (!mountedRef.current) return;
+        if (!nudged) await waitForIdle();
+        setLecturerState2("loading");
+      }
 
       // How should THIS slide be taught to THIS student right now? (never skips content or changes assessment)
       const plan = planForSlide({ slide: targetSlide, slideIndex: index, mastery: masteryNow(), session: sessionAdaptRef.current, enabled: adaptOnRef.current });
@@ -3339,7 +3390,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const currentMessages = messagesRef.current;
       const questionCount = currentMessages.filter((m) => m.type === "question").length;
       const slidesReached = completed ? curriculum.slides.length : slideIndexRef.current + 1;
-      track("session_end", null, { completed, slides_reached: slidesReached, questions: questionCount, duration_s: Math.round((Date.now() - new Date(sessionStartedAtRef.current).getTime()) / 1000) });
+      const ps = pauseTrackerRef.current.stats();
+      track("session_end", null, { completed, slides_reached: slidesReached, questions: questionCount, duration_s: Math.round((Date.now() - new Date(sessionStartedAtRef.current).getTime()) / 1000), paused_s: Math.round(ps.totalMs / 1000), pauses: ps.count, manual_pauses: ps.manual, away_pauses: ps.away, longest_pause_s: Math.round(ps.longestMs / 1000) });
       flushEvents();
       const summary = await generateSessionSummary(curriculum, currentMessages);
       await recordSession(
@@ -3375,6 +3427,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
   const handleQuestion = useCallback(
     async (questionText) => {
+      if (pausedRef.current) await resumeLecture({ silent: true });
       const tQuestion = performance.now();
       track("question", currentInfo(), { chars: questionText.length, focus: focusIdRef.current });
       addMessage(studentName, questionText, "question");
@@ -3592,6 +3645,66 @@ ${NATURAL_SPEECH_STYLE}`;
     if (value === "lost") handleQuestion("I'm lost on this part. Could you explain it again in a simpler way, with a different example?");
   };
 
+  // ---- Pause / resume
+  const pauseLecture = (reason = "manual") => {
+    if (pausedRef.current) return;
+    pauseTrackerRef.current.start(reason, slideIndexRef.current);
+    pausedRef.current = true;
+    setPaused(true);
+    setPauseReason(reason === "away" ? "away" : "manual");
+    track("pause", currentInfo(), { reason });
+    // Cut the sentence being spoken (the lecture loop repeats it on resume), unless a question is being answered:
+    // an answer finishes its sentence, and anything after it waits.
+    const speakingNow = !!(activeResolveRef.current || (window.speechSynthesis && window.speechSynthesis.speaking));
+    if (speakingNow && stateRef.current !== "answering") {
+      stopSpeaking();
+      if (stateRef.current === "explaining") setLecturerState2("idle");
+    }
+  };
+  const resumeLecture = async ({ silent = false } = {}) => {
+    if (!pausedRef.current || resumingRef.current) return;
+    resumingRef.current = true;
+    setResuming(true);
+    const ended = pauseTrackerRef.current.end();
+    if (ended) {
+      track("resume", slideInfo(ended.slideIndex), { pause_ms: ended.ms, reason: ended.reason });
+      if (ended.ms >= 60000) focusStartRef.current = Date.now(); // a real break restarts the "how long have we been going" clock
+    }
+    // the lecturer notices: nothing for a quick pause, a friendly welcome back for a longer one
+    const line = silent ? null : welcomeBackLine({ ms: ended ? ended.ms : 0, slideTitle: (curriculum.slides[slideIndexRef.current] || {}).title });
+    if (line) {
+      addMessage("lecturer", line, "explain");
+      await speakInterruptible(line, { bypassPause: true });
+    }
+    pausedRef.current = false;
+    setPaused(false);
+    resumingRef.current = false;
+    setResuming(false);
+  };
+  useEffect(() => { sessionCompleteRef.current = sessionComplete; }, [sessionComplete]);
+  // Screen locked / tab left for a few seconds (a phone call, a message...): pause automatically so nothing is missed.
+  // The student decides when to come back; we never resume by ourselves.
+  useEffect(() => {
+    if (role === "lecturer") return undefined;
+    let timer = null;
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        timer = setTimeout(() => {
+          if (document.visibilityState === "hidden" && autopilotEnabledRef.current && !sessionCompleteRef.current) pauseLecture("away");
+        }, 4000);
+      } else if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // "Explain differently": the student asks for what helps (also logged: it tells us what kind of explanation each learner needs)
   const requestDifferent = (kind) => {
     const r = EXPLAIN_REQUESTS[kind];
@@ -3685,6 +3798,7 @@ ${NATURAL_SPEECH_STYLE}`;
   useEffect(() => { focusIdRef.current = focusId; }, [focusId]);
 
   const statusLabel = () => {
+    if (paused) return "Paused";
     if (lecturerState === "loading") return "Thinking…";
     if (lecturerState === "answering") return "Answering your question…";
     if (lecturerState === "explaining") return slide.hasCode ? "Typing and explaining…" : "Explaining…";
@@ -3855,6 +3969,11 @@ ${NATURAL_SPEECH_STYLE}`;
               {Object.entries(EXPLAIN_REQUESTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
           )}
+          {paused && (
+            <span className="paused-note" role="status">
+              ⏸ {resuming ? "Resuming…" : pauseReason === "away" ? "You stepped away, so I paused. Press Resume when you're ready." : "Paused. Take your time. Press Resume when you're ready."}
+            </span>
+          )}
           {adaptNote && adaptOn && role !== "lecturer" && <span className="adapt-note" title={adaptNote.reason} role="status">✨ {adaptNote.text}. {adaptNote.reason}</span>}
           </div>
 
@@ -3922,8 +4041,15 @@ ${NATURAL_SPEECH_STYLE}`;
       </div>
 
       <div className="controlbar">
-        <button className={`ctrl ${micOn ? "on" : ""}`} onClick={() => setMicOn((v) => !v)} title="Mic" aria-label={micOn ? "Mute microphone" : "Unmute microphone"} aria-pressed={micOn}>
-          {micOn ? <Mic size={18} /> : <MicOff size={18} />}
+        <button
+          className={`ctrl labeled ${paused ? "raised" : ""}`}
+          onClick={() => (paused ? resumeLecture() : pauseLecture("manual"))}
+          disabled={resuming}
+          title={paused ? "Resume the lecture" : "Pause the lecture, for example to read the slide slowly or take a call"}
+          aria-label={paused ? "Resume the lecture" : "Pause the lecture"}
+          aria-pressed={paused}
+        >
+          {paused ? <Play size={18} /> : <Pause size={18} />} <span>{paused ? "Resume" : "Pause"}</span>
         </button>
         <button className={`ctrl ${camOn ? "on" : ""}`} onClick={() => setCamOn((v) => !v)} title="Camera" aria-label={camOn ? "Turn camera off" : "Turn camera on"} aria-pressed={camOn}>
           {camOn ? <Video size={18} /> : <VideoOff size={18} />}

@@ -5,6 +5,7 @@ import CodePane from "../../src/slideKit/CodePane.jsx";
 import CheckCard from "../../src/slideKit/CheckCard.jsx";
 import MasteryPanel from "../../src/learning/MasteryPanel.jsx";
 import PracticePanel from "../../src/learning/PracticePanel.jsx";
+import SplashScreen from "../../src/SplashScreen.jsx";
 import FlagReviewCard from "../../src/learning/FlagReviewCard.jsx";
 import { ConceptTable, MisconceptionList } from "../../src/learning/ClassInsights.jsx";
 import { newCheckState, chooseOption, finishCheck } from "../../src/slideKit/checkFlow.js";
@@ -101,5 +102,13 @@ t("no Practise button when practice isn't available", !renderToStaticMarkup(<Mas
 const pq = [{ question: "Q one?", options: ["a", "b", "c", "d"], answer: 2, explanation: "Because c.", concept: "pointers" }, { question: "Q two?", options: ["a", "b", "c", "d"], answer: 0, explanation: "Because a.", concept: "pointers" }];
 const pp = renderToStaticMarkup(<PracticePanel concept="pointers" questions={pq} onAnswer={noop} onClose={noop} />);
 t("practice panel: names the concept, progress, says the questions are AI-written, shows the first question", pp.includes("Practice: pointers") && pp.includes("question 1 of 2") && pp.includes("AI-written revision questions") && pp.includes("Q one?") && !pp.includes("Q two?"));
+// ---- splash (brand)
+const sp = renderToStaticMarkup(<SplashScreen onContinue={noop} onOpenLegal={noop} />);
+t("splash states the product idea: AI-guided learning, with a clear call to action", sp.includes("AI-guided learning") && sp.includes("SEMAI") && sp.includes("Start learning"));
+t("splash shows what it does (3 benefits) and how it works (3 steps)", ["Adapts to you", "Ask out loud", "Quizzes and notes"].every((x) => sp.includes(x)) && ["Join a lecture", "Learn with your AI lecturer", "See your progress grow"].every((x) => sp.includes(x)));
+t("splash keeps the version stamp, company details and legal links", /Version [^<]*build/.test(sp) && sp.includes("SayMyTech Developers") && sp.includes("Privacy Policy") && sp.includes("Terms of Service"));
+t("splash logo is labelled for screen readers; the animated background is hidden from them", sp.includes('role="img"') && sp.includes("SEMAI logo") && /<canvas[^>]*aria-hidden="true"/.test(sp));
+t("splash respects reduced motion", sp.includes("prefers-reduced-motion"));
+t("splash scrolls on small screens (no clipped content)", /\.splash \{[^}]*overflow-y: auto/.test(sp));
 console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

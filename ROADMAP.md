@@ -82,6 +82,16 @@ effects: weaker students get simplified explanations, so raw comparisons are con
 "Practise this" button: AI writes 4 questions grounded in the lecture that taught the concept (validated, answer positions shuffled),
 and practice answers count towards mastery.
 
+v1.9.0 (12 Oct 2026): **Pause + brand.** The cosmetic mic button is replaced by a real **Pause/Resume**: the student can stop the lecture
+(read slowly, take a call), the speech holds, typing holds, and the lecturer greets them on return in proportion to the break (nothing under
+15s). The lecture also **auto-pauses** if the tab is left / screen locked for 4s (the student decides when to resume). Pauses are logged as
+`pause`/`resume` events (reason manual|away, duration, slide) and session totals ride on `session_end`. Used as RHYTHM and PACING signals only,
+never as a score on a student: lecturers see class-level "slides where many students pause" (manual pauses only; away pauses say nothing about the
+slide) and a Paused column; each student sees their own focus rhythm on their history page; after ~25 unbroken minutes the lecturer gently
+suggests a break. New brand mark (open book + network feeding a guide node = AI-guided learning), generated favicon and PWA/maskable icons
+(`node scripts/make-icons.mjs`), and a redesigned splash: living network background (reduced-motion safe, pauses when hidden), benefits,
+how-it-works, version stamp.
+
 Known limits: the proxy rate limiter is per running instance, not global; error logs
 have no automatic purge (see the retention note in `supabase/migrations/20261008_client_error_log.sql`).
 
