@@ -2699,8 +2699,12 @@ function CourseInsightsScreen({ course, session, onBack }) {
 // ---------------------------------------------------------------------------
 // Main meeting room
 // ---------------------------------------------------------------------------
+export { LectureRoom };
 function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, researchConsent, role, onLeave, onEditSession }) {
   const [slideIndex, setSlideIndex] = useState(0);
+  // bumped whenever the student jumps to another slide by hand, so teaching work still in flight for the slide they left can tell it is out of date
+  const navTokenRef = useRef(0);
+  const [autopilotKick, setAutopilotKick] = useState(0);
   const [viewMode, setViewMode] = useState("slides"); // 'slides' | 'ide'
   const [chatOpen, setChatOpen] = useState(true);
   const [messages, setMessages] = useState([]);
@@ -2894,6 +2898,9 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const slide = curriculum.slides[Math.min(slideIndex, curriculum.slides.length - 1)];
   // Progressive reveal only applies while the lecturer is actively teaching this slide
   const progressive = autopilotOn && reveal.slide === slideIndex;
+  // The code editor only makes sense for a slide that has code. This is derived while rendering (not fixed up in an
+  // effect afterwards) so that moving from a code slide to a plain one can never render the editor without code.
+  const view = viewMode === "ide" && !slide.hasCode ? "slides" : viewMode;
 
   // New slide: back to the top (title visible) and follow the lecturer again.
   useEffect(() => {
@@ -2910,7 +2917,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
     setFocusId(null);
   }, [slideIndex]);
   useEffect(() => {
-    if (speakProgress.slide !== slideIndex || !autopilotOn || viewMode !== "slides" || slideIsScripted) {
+    if (speakProgress.slide !== slideIndex || !autopilotOn || view !== "slides" || slideIsScripted) {
       if (speakProgress.slide !== slideIndex || !autopilotOn) setFocusId(null);
       return;
     }
@@ -2919,12 +2926,12 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       lastFocusRef.current = m.id;
       setFocusId(m.id);
     }
-  }, [speakProgress, blocks, slideIndex, autopilotOn, viewMode, slideIsScripted]);
+  }, [speakProgress, blocks, slideIndex, autopilotOn, view, slideIsScripted]);
 
   // Keep what is being discussed comfortably in view (and only move when it isn't).
   useEffect(() => {
     const el = stageRef.current;
-    if (!el || userScrolled || !autopilotOn || viewMode !== "slides" || speakProgress.slide !== slideIndex) return;
+    if (!el || userScrolled || !autopilotOn || view !== "slides" || speakProgress.slide !== slideIndex) return;
     const live = reveal.slide === slideIndex && reveal.count > 0 ? el.querySelector(".sk-step.current, .sk-final") : null;
     const target = live || (focusId ? el.querySelector(`[data-sk-block="${focusId}"]`) : null);
     if (!target) return;
@@ -2940,7 +2947,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       scrollHeight: el.scrollHeight,
     });
     if (top !== null) el.scrollTo({ top, behavior: "smooth" });
-  }, [focusId, speakProgress, reveal, slideIndex, userScrolled, autopilotOn, viewMode]);
+  }, [focusId, speakProgress, reveal, slideIndex, userScrolled, autopilotOn, view]);
 
   useEffect(() => () => { if (checkResolverRef.current) checkResolverRef.current({ cancelled: true }); }, []);
 
@@ -2957,7 +2964,8 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       clearInterval(typingIntervalRef.current);
       typingIntervalRef.current = null;
     }
-    setTypedCode(slide.hasCode && explainedSlides.current.has(slideIndex) ? slide.code : "");
+    // (taught already, or the student is browsing by hand with the lecturer paused: show it all; only the live lecturer types it out)
+    setTypedCode(slide.hasCode && (explainedSlides.current.has(slideIndex) || !autopilotEnabledRef.current) ? slide.code : "");
   }, [slideIndex, slide]);
 
   // Fallback estimate used for the browser-voice path (and to kick off code
@@ -3162,6 +3170,9 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const teachSlide = useCallback(
     async (index) => {
       const targetSlide = curriculum.slides[index];
+      const myToken = navTokenRef.current;
+      // true once the student has navigated away (or left): from then on this run must not change anything on screen
+      const stale = () => !mountedRef.current || navTokenRef.current !== myToken;
       setViewMode(targetSlide.hasCode ? "ide" : "slides");
       setLecturerState2("loading");
 
@@ -3172,7 +3183,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         addMessage("lecturer", BREAK_NUDGE_TEXT, "explain");
         setLecturerState2("explaining");
         const nudged = await speakInterruptible(BREAK_NUDGE_TEXT);
-        if (!mountedRef.current) return;
+        if (stale()) return;
         if (!nudged) await waitForIdle();
         setLecturerState2("loading");
       }
@@ -3197,12 +3208,12 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
           `Quick reminder: ${plan.reminder} is the idea we're building on here.`,
           "recap"
         );
-        if (!mountedRef.current) return;
+        if (stale()) return;
         structuredUnits = [{ say: line, reveal: 0, lines: null }, ...structuredUnits];
       }
       const isWalkthrough = !!(targetSlide.hasCode && targetSlide.codeSteps && targetSlide.codeSteps.length);
       const explanation = structuredUnits ? structuredUnits.map((u) => u.say).join(" ") : await generateExplanation(targetSlide, plan);
-      if (!mountedRef.current) return;
+      if (stale()) return;
       addMessage("lecturer", explanation, "explain");
       setLecturerState2("explaining");
 
@@ -3218,7 +3229,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       let sentenceIndex = 0;
 
       while (sentenceIndex < sentences.length) {
-        if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        if (stale() || !autopilotEnabledRef.current) return;
         setSpeakProgress({ slide: index, i: sentenceIndex, n: sentences.length, text: sentences[sentenceIndex] });
         if (structuredUnits) {
           const u = structuredUnits[sentenceIndex];
@@ -3229,7 +3240,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
           }
         }
         const completed = await speakInterruptible(sentences[sentenceIndex]);
-        if (!mountedRef.current) return;
+        if (stale()) return;
 
         if (completed) {
           sentenceIndex++;
@@ -3243,7 +3254,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         setInterrupted(true);
         await waitForIdle();
         setInterrupted(false);
-        if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        if (stale() || !autopilotEnabledRef.current) return;
 
         if (targetSlide.hasCode && typedCodeRef.current.length < targetSlide.code.length) {
           const remainingText = sentences.slice(sentenceIndex).join(" ");
@@ -3272,7 +3283,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       const check = targetSlide.checks && targetSlide.checks[0];
       const isLast = index === curriculum.slides.length - 1;
       let ranCheck = false;
-      if (check && !isLast && mountedRef.current && autopilotEnabledRef.current) {
+      if (check && !isLast && !stale() && autopilotEnabledRef.current) {
         const lead = "Quick question, to check you've got this.";
         setLecturerState2("explaining");
         addMessage("lecturer", lead, "explain");
@@ -3282,18 +3293,18 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
           track("check_shown", slideInfo(index), { concept: check.concept });
         });
         const leadDone = await speakInterruptible(lead);
-        if (!mountedRef.current) return;
+        if (stale()) return;
         if (!leadDone) await waitForIdle();
         setLecturerState2("idle");
         const outcome = await answered;
-        if (!mountedRef.current || !autopilotEnabledRef.current) return;
+        if (stale() || !autopilotEnabledRef.current) return;
         ranCheck = true;
         if (outcome && !outcome.skipped && !outcome.cancelled) {
           const feedback = feedbackSpeech(check, outcome.correct);
           setLecturerState2("explaining");
           addMessage("lecturer", feedback, "explain");
           const fbDone = await speakInterruptible(feedback);
-          if (!mountedRef.current) return;
+          if (stale()) return;
           if (!fbDone) await waitForIdle();
           setLecturerState2("idle");
           await sleep(700);
@@ -3312,12 +3323,12 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
         isLast ? "That's everything for today — nicely done!" : "Does that make sense so far?",
         "check"
       );
-      if (!mountedRef.current) return;
+      if (stale()) return;
       const safeCheck = checkText;
       addMessage("lecturer", safeCheck, "explain");
       setLecturerState2("explaining");
       const checkCompleted = await speakInterruptible(safeCheck);
-      if (!mountedRef.current) return;
+      if (stale()) return;
       if (!checkCompleted) await waitForIdle();
       setLecturerState2("idle");
       if (!isLast) await sleep(900);
@@ -3353,15 +3364,20 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   }, [lecturerIdentity, studentName, curriculum, wordBudget, speakInterruptible, askLecturer]);
 
   const runAutopilot = useCallback(async () => {
+    const runToken = navTokenRef.current;
     if (!introDoneRef.current) {
       await runIntro();
     }
     for (let i = slideIndexRef.current; i < curriculum.slides.length; i++) {
-      if (!mountedRef.current || !autopilotEnabledRef.current) return;
+      if (!mountedRef.current || !autopilotEnabledRef.current) return null;
+      // the student jumped to another slide while this run was busy: hand over to a fresh run from where they are now
+      if (navTokenRef.current !== runToken) return "restart";
       setSlideIndex(i);
       await teachSlide(i);
     }
+    if (navTokenRef.current !== runToken) return "restart";
     if (mountedRef.current) setSessionComplete(true);
+    return null;
   }, [runIntro, teachSlide, curriculum]);
 
   // Drives the whole session automatically: starts on mount / whenever
@@ -3370,12 +3386,20 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   useEffect(() => {
     if (autopilotOn && !autopilotRunningRef.current) {
       autopilotRunningRef.current = true;
-      runAutopilot().finally(() => {
-        autopilotRunningRef.current = false;
-      });
+      runAutopilot().then(
+        (outcome) => {
+          autopilotRunningRef.current = false;
+          // autopilot was switched back on while the old run was still winding down: start the new run now
+          if (outcome === "restart" && mountedRef.current && autopilotEnabledRef.current) setAutopilotKick((k) => k + 1);
+        },
+        (err) => {
+          autopilotRunningRef.current = false;
+          throw err; // still reported by the global error logger, exactly as before
+        }
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autopilotOn, curriculum]);
+  }, [autopilotOn, curriculum, autopilotKick]);
 
   // Records the session once — either when it completes naturally or when
   // the student leaves early — never both (guarded by sessionRecordedRef).
@@ -3717,6 +3741,7 @@ ${NATURAL_SPEECH_STYLE}`;
   // loop and a manually-jumping student would fight over the current slide.
   const changeSlide = (dir) => {
     track("slide_nav", currentInfo(), { dir });
+    navTokenRef.current += 1;
     cancelActiveCheck();
     stopSpeaking();
     setAutopilotOn(false);
@@ -3725,6 +3750,7 @@ ${NATURAL_SPEECH_STYLE}`;
     setStepCaption("");
     setLecturerState2("idle");
     setInterrupted(false);
+    setSpeakProgress({ slide: -1, i: 0, n: 1, text: "" });
     setSlideIndex((i) => Math.max(0, Math.min(curriculum.slides.length - 1, i + dir)));
   };
 
@@ -3877,10 +3903,10 @@ ${NATURAL_SPEECH_STYLE}`;
           </div>
 
           <div className="stage-switch">
-            <button className={viewMode === "slides" ? "active" : ""} onClick={() => setViewMode("slides")}>
+            <button className={view === "slides" ? "active" : ""} onClick={() => setViewMode("slides")}>
               <PresentationIcon size={14} /> Slides
             </button>
-            <button className={viewMode === "ide" ? "active" : ""} disabled={!slide.hasCode} onClick={() => setViewMode("ide")}>
+            <button className={view === "ide" ? "active" : ""} disabled={!slide.hasCode} onClick={() => setViewMode("ide")}>
               <Code2 size={14} /> Code editor
             </button>
           </div>
@@ -3896,7 +3922,7 @@ ${NATURAL_SPEECH_STYLE}`;
             role="region"
             aria-label="Lecture slide"
           >
-            {viewMode === "slides" ? (
+            {view === "slides" ? (
               <SlideView
                 slide={slide}
                 unit={curriculum.unit}
@@ -3917,14 +3943,14 @@ ${NATURAL_SPEECH_STYLE}`;
                   <div className="ide-placeholder">// The lecturer will type this live while explaining.{"\n"}// Starting automatically…</div>
                 ) : (
                   <CodePane
-                    code={slide.code}
+                    code={slide.code || ""}
                     language={slide.language}
                     filename={slide.filename}
                     typedCode={slide.codeSteps ? null : typedCode}
-                    typing={!slide.codeSteps && typedCode.length < slide.code.length}
+                    typing={!slide.codeSteps && typedCode.length < (slide.code || "").length}
                     activeLines={progressive ? activeLines : null}
                     caption={progressive ? stepCaption : ""}
-                    expectedOutput={slide.expectedOutput && (slide.codeSteps ? !progressive || reveal.count === Infinity || !activeLines : typedCode.length >= slide.code.length) ? slide.expectedOutput : ""}
+                    expectedOutput={slide.expectedOutput && (slide.codeSteps ? !progressive || reveal.count === Infinity || !activeLines : typedCode.length >= (slide.code || "").length) ? slide.expectedOutput : ""}
                     liveTag={lecturerState === "explaining" && !slide.codeSteps}
                   />
                 )}
@@ -3933,7 +3959,7 @@ ${NATURAL_SPEECH_STYLE}`;
             {activeCheck && activeCheck.index === slideIndex && (
               <CheckCard state={activeCheck} onChoose={chooseCheckOption} onConfidence={finishCheck} onSkip={skipCheck} />
             )}
-            {viewMode === "slides" && userScrolled && autopilotOn && speakProgress.slide === slideIndex && lecturerState !== "idle" && (
+            {view === "slides" && userScrolled && autopilotOn && speakProgress.slide === slideIndex && lecturerState !== "idle" && (
               <button className="follow-pill" onClick={followLecturer}>↧ Follow the lecturer</button>
             )}
           </div>
@@ -3943,7 +3969,7 @@ ${NATURAL_SPEECH_STYLE}`;
             <button className="nav-btn" disabled={slideIndex === 0} onClick={() => changeSlide(-1)}>
               <ChevronLeft size={16} /> Prev
             </button>
-            {slide.hasCode && lecturerState === "idle" && typedCode.length > 0 && typedCode.length < slide.code.length ? (
+            {slide.hasCode && lecturerState === "idle" && typedCode.length > 0 && typedCode.length < (slide.code || "").length ? (
               <button className="explain-btn" onClick={continueTypingCode}>
                 Continue typing code
               </button>
