@@ -9,6 +9,27 @@ const THEME = {
   nodeTextColor: "#EDEFF2", edgeLabelBackground: "#1E2530", clusterBkg: "#222A35", clusterBorder: "#3A4452",
   fontSize: "15px", actorBkg: "#2A3340", actorBorder: "#E8A33D", actorTextColor: "#EDEFF2", signalColor: "#C7CCD4",
   noteBkgColor: "#3A3322", noteTextColor: "#EDEFF2", labelBoxBkgColor: "#2A3340",
+  // Pie charts
+  pie1: "#E8A33D", pie2: "#6FD3A4", pie3: "#6CA8F0", pie4: "#E57A8A", pie5: "#B79CF0", pie6: "#F0D56C", pie7: "#5CC8D6", pie8: "#F09A6C",
+  pieTitleTextColor: "#EDEFF2", pieSectionTextColor: "#14181F", pieLegendTextColor: "#EDEFF2",
+  pieStrokeColor: "#1B222C", pieOuterStrokeColor: "#3A4452", pieOpacity: "0.95",
+  // Bar / line graphs (xychart-beta)
+  xyChart: {
+    backgroundColor: "transparent", titleColor: "#EDEFF2",
+    xAxisLabelColor: "#C7CCD4", xAxisTitleColor: "#C7CCD4", xAxisTickColor: "#8890A0", xAxisLineColor: "#8890A0",
+    yAxisLabelColor: "#C7CCD4", yAxisTitleColor: "#C7CCD4", yAxisTickColor: "#8890A0", yAxisLineColor: "#8890A0",
+    plotColorPalette: "#E8A33D,#6FD3A4,#6CA8F0,#E57A8A,#B79CF0",
+  },
+  // Mind maps and timelines colour their branches from this scale
+  cScale0: "#E8A33D", cScale1: "#6FD3A4", cScale2: "#6CA8F0", cScale3: "#E57A8A", cScale4: "#B79CF0", cScale5: "#F0D56C", cScale6: "#5CC8D6", cScale7: "#F09A6C",
+  cScaleLabel0: "#14181F", cScaleLabel1: "#14181F", cScaleLabel2: "#14181F", cScaleLabel3: "#14181F",
+  cScaleLabel4: "#14181F", cScaleLabel5: "#14181F", cScaleLabel6: "#14181F", cScaleLabel7: "#14181F",
+  // Quadrant charts
+  quadrant1Fill: "#2A3340", quadrant2Fill: "#25303B", quadrant3Fill: "#222A35", quadrant4Fill: "#2A3340",
+  quadrant1TextFill: "#EDEFF2", quadrant2TextFill: "#EDEFF2", quadrant3TextFill: "#EDEFF2", quadrant4TextFill: "#EDEFF2",
+  quadrantPointFill: "#E8A33D", quadrantPointTextFill: "#EDEFF2", quadrantTitleFill: "#EDEFF2",
+  quadrantXAxisTextFill: "#C7CCD4", quadrantYAxisTextFill: "#C7CCD4",
+  quadrantInternalBorderStrokeFill: "#3A4452", quadrantExternalBorderStrokeFill: "#3A4452",
 };
 
 // Mermaid is large, so it is only fetched the first time a diagram is shown.
