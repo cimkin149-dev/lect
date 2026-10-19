@@ -38,7 +38,7 @@ Slide types — choose each slide's type for what teaches that idea best:
 - definition: one precise term with a formal definition and an example
 - comparison: a side-by-side table contrasting two or more things
 - worked_example: a calculation or problem solved STEP BY STEP in front of students (maths, physics, statistics, accounting, finance, engineering, algorithm tracing)
-${allowLiveCode ? "- code_walkthrough: a real code example explained line by line (use this for ALL programming examples)\n" : ""}- diagram: a visual of a process, architecture, hierarchy or relationships (flowchart, sequence, class, state or ER diagram)
+${allowLiveCode ? "- code_walkthrough: a real code example explained line by line (use this for ALL programming examples)\n" : ""}- diagram: a visual of a process, algorithm, architecture, hierarchy or relationships (flowchart using varied shapes such as decisions, start/end, input/output and databases; network graph; sequence, class, state or ER diagram; mind map; timeline; pie chart; bar or line graph of data)
 - plot: a graph of a function or a chart of data
 - summary: the final slide — key takeaways plus a quick check question
 
@@ -82,7 +82,12 @@ const TYPE_SPECS = {
  "expectedOutput": string (the EXACT text the program prints when run; omit if it prints nothing; it must match the code precisely).
  "bullets" = 3-5 short points on the concepts used. "detail" = 2-4 sentences. Spoken fields must not read code symbols aloud letter by letter.`,
   diagram: `Type "diagram": "diagram": { "code": string (Mermaid source), "caption": string }.
- Mermaid rules: begin with one of: flowchart TD, flowchart LR, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram. At most 12 nodes. Put node labels containing spaces or punctuation in double quotes inside brackets, e.g. A["Read input"]. Plain ASCII only, no HTML, no style/classDef/click lines. Use \\n inside the JSON string for line breaks.
+ Mermaid rules: begin with exactly one of: flowchart TD, flowchart LR, graph LR (network / node-link graph), sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, mindmap, timeline, pie, xychart-beta (bar / line graph of data). Choose the type that fits the idea; use a flowchart for processes, algorithms, decisions and architecture.
+ FLOWCHART SHAPES: do NOT draw every node as a plain box. Give each node the shape that carries its meaning, always with the label in double quotes:
+   A["Process step"] rectangle; A("Rounded step") rounded; A(["Start or End"]) stadium, use it for the first and last node; A[["Function or subroutine call"]] subroutine; A[("Database or storage")] cylinder; A(("Event or hub")) circle; A{"Decision?"} diamond, use it for every yes/no or if question with labelled edges -->|Yes| and -->|No|; A{{"Preparation or loop setup"}} hexagon; A[/"Input or output"/] parallelogram, use it for reading input and printing results; A[/"Manual step"\\] trapezoid.
+   Edges: A --> B arrow; A -.-> B dotted; A ==> B thick; A --- B plain line (undirected graphs); A -->|label| B labelled. When the idea allows it, use at least three different shapes in one flowchart.
+ DATA GRAPHS: xychart-beta, then a title line, x-axis ["Jan", "Feb", "Mar"], y-axis "Units" 0 --> 100, then bar [10, 20, 30] and/or line [10, 20, 30] (one value per x label). Pie chart: pie title Share of marks, then one line per slice like "Loops" : 40. For the graph of a mathematical function use a "plot" slide instead.
+ At most 12 nodes (or 8 chart points). Plain ASCII only, no HTML, no style/classDef/click lines. Escape every double quote inside the JSON string as \\" and use \\n for line breaks.
  "bullets" = 3-5 short points narrating the diagram. "detail" = 2-4 sentences. "notes" must tell the lecturer to walk through the diagram in order.`,
   plot: `Type "plot": "plot" is EITHER { "kind": "function", "expressions": [{ "expr": string, "label": string }] (1-3, variable x, syntax like x^2, sin(x), sqrt(x), exp(x), log(x), abs(x), pi), "xMin": number, "xMax": number, "yMin": number (optional), "yMax": number (optional), "caption": string } OR { "kind": "bar" | "line", "labels": string[], "series": [{ "name": string, "values": number[] }], "caption": string }.
  "bullets" = 3-5 points on what to notice. "detail" = 2-4 sentences.`,
