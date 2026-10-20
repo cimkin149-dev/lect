@@ -30,7 +30,7 @@ import {
   Pause, Play, Hand, MessageSquare, PhoneOff, Code2, PresentationIcon, Send,
   ChevronRight, ChevronLeft, Video, VideoOff, Loader2, Volume2, Upload,
   Sparkles, Trash2, ArrowRight, GraduationCap, Users, Settings2, RotateCcw,
-  AlertTriangle, Clock, FileDown, Maximize2, Minimize2, Flag, CheckCircle2, Download, } from "lucide-react";
+  AlertTriangle, Clock, FileDown, Maximize2, Minimize2, Flag, CheckCircle2, Download, MoreHorizontal, X, } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // No npm install needed for PPTX/PDF parsing below — it's implemented with
@@ -2004,7 +2004,7 @@ function JoinScreen({ courses, onJoin, onBack, onOpenLegal, studentSession, onSt
           <input type="checkbox" checked={research} onChange={(e) => changeResearch(e.target.checked)} />
           <span>Optional: let an anonymised copy of my learning activity be used for education research. You can change this any time.</span>
         </label>
-        <div className="join-hint" style={{ textAlign: "left" }}>
+        <div className="join-hint" style={{ textAlign: "left", marginBottom: 16 }}>
           Your lecturer is shown how students interact with each lecture (slides viewed, quiz answers, questions) to improve it, and to personalise your learning. This never includes your name or email.{" "}
           <button className="skip-link inline" onClick={() => onOpenLegal && onOpenLegal("privacy")}>Privacy Policy</button>
         </div>
@@ -2699,6 +2699,10 @@ function CourseInsightsScreen({ course, session, onBack }) {
 // ---------------------------------------------------------------------------
 // Main meeting room
 // ---------------------------------------------------------------------------
+// Phones (portrait) and landscape phones. There the chat is a sheet over the slide, so it starts closed.
+const PHONE_QUERY = "(max-width: 720px), (max-height: 500px) and (orientation: landscape)";
+const isPhoneScreen = () => { try { return !!(window.matchMedia && window.matchMedia(PHONE_QUERY).matches); } catch (e) { return false; } };
+
 export { LectureRoom };
 function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, researchConsent, role, onLeave, onEditSession }) {
   const [slideIndex, setSlideIndex] = useState(0);
@@ -2706,8 +2710,13 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   const navTokenRef = useRef(0);
   const [autopilotKick, setAutopilotKick] = useState(0);
   const [viewMode, setViewMode] = useState("slides"); // 'slides' | 'ide'
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(() => !isPhoneScreen());
+  const [moreOpen, setMoreOpen] = useState(false); // phone top bar: the secondary actions live under "More"
   const [messages, setMessages] = useState([]);
+  // with the chat closed (the phone default) show how many lecturer lines / answers arrived since it was last open
+  const [seenCount, setSeenCount] = useState(0);
+  useEffect(() => { if (chatOpen) setSeenCount(messages.length); }, [chatOpen, messages.length]);
+  const unread = chatOpen ? 0 : Math.max(0, messages.length - seenCount);
   const [chatInput, setChatInput] = useState("");
   const [lecturerState, setLecturerState] = useState("idle"); // idle | explaining | answering | loading
   const [handRaised, setHandRaised] = useState(false);
@@ -2893,7 +2902,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+  }, [messages, chatOpen]);
 
   const slide = curriculum.slides[Math.min(slideIndex, curriculum.slides.length - 1)];
   // Progressive reveal only applies while the lecturer is actively teaching this slide
@@ -3836,13 +3845,23 @@ ${NATURAL_SPEECH_STYLE}`;
     <div className={`room ${presentationMode ? "presentation" : ""}`}>
       <div className="topbar">
         <div className="topbar-title">
-          <span className="dot-live" /> {curriculum.code} · {curriculum.unit}
+          <span className="dot-live" /> <span className="topbar-title-text">{curriculum.code} · {curriculum.unit}</span>
         </div>
         <div className="topbar-right">
-          <div className="topbar-slide">{slide.title} · {slideIndex + 1}/{curriculum.slides.length}</div>
+          <div className="topbar-slide"><span className="topbar-slide-title">{slide.title} · </span>{slideIndex + 1}/{curriculum.slides.length}</div>
           <div className="topbar-budget" title="Words per slide, computed from lecture length & pacing">
             <Clock size={12} /> {settings.durationMinutes}min · {PACE_OPTIONS.find((p) => p.id === settings.pace)?.label}
           </div>
+          <button
+            className="topbar-more"
+            onClick={() => setMoreOpen((v) => !v)}
+            aria-label="More options"
+            aria-expanded={moreOpen}
+            aria-controls="topbar-actions"
+          >
+            <MoreHorizontal size={20} />
+          </button>
+          <div id="topbar-actions" className={`topbar-actions ${moreOpen ? "open" : ""}`} onClick={() => setMoreOpen(false)}>
           <button
             className={`topbar-edit ${audioBlocked ? "audio-blocked" : ""}`}
             onClick={enableAudio}
@@ -3875,8 +3894,10 @@ ${NATURAL_SPEECH_STYLE}`;
               <Settings2 size={13} /> Edit session
             </button>
           )}
+          </div>
         </div>
       </div>
+      {moreOpen && <div className="topbar-scrim" onClick={() => setMoreOpen(false)} />}
 
       {ttsNotice && (
         <div className={`tts-notice ${audioBlocked ? "clickable" : ""}`} onClick={audioBlocked ? enableAudio : undefined}>
@@ -4023,7 +4044,7 @@ ${NATURAL_SPEECH_STYLE}`;
 
         {chatOpen && (
           <div className="side-panel">
-            <div className="side-header">Chat & questions</div>
+            <div className="side-header"><span>Chat & questions</span><button className="side-close" onClick={() => setChatOpen(false)} aria-label="Close chat"><X size={18} /></button></div>
             <div className="side-messages" aria-live="polite" aria-relevant="additions" role="log">
               {messages.length === 0 && <div className="empty-hint">Your lecturer will greet you in a moment…</div>}
               {messages.map((m) => (
@@ -4089,8 +4110,9 @@ ${NATURAL_SPEECH_STYLE}`;
         >
           <Hand size={18} />
         </button>
-        <button className={`ctrl ${chatOpen ? "on" : ""}`} onClick={() => setChatOpen((v) => !v)} title="Chat" aria-label={chatOpen ? "Close chat panel" : "Open chat panel"} aria-pressed={chatOpen}>
+        <button className={`ctrl ${chatOpen ? "on" : ""}`} onClick={() => setChatOpen((v) => !v)} title="Chat" aria-label={chatOpen ? "Close chat panel" : unread ? `Open chat panel, ${unread} new` : "Open chat panel"} aria-pressed={chatOpen}>
           <MessageSquare size={18} />
+          {unread > 0 && <span className="ctrl-badge" aria-hidden="true">{unread > 9 ? "9+" : unread}</span>}
         </button>
         <button className="ctrl leave labeled" onClick={handleLeaveClick} title="Leave the meeting">
           <PhoneOff size={18} /> <span>Leave</span>
@@ -4653,6 +4675,118 @@ function GlobalStyles() {
 
       @media (max-width: 720px) {
         .setup-grid { grid-template-columns: 1fr; }
+      }
+
+      /* ===== Phones: Meet / Zoom style =====
+         The slide gets the whole screen. The chat becomes a bottom sheet (a side column would leave the slide
+         ~100px wide), secondary actions move under "More", and the call controls are round, thumb-sized buttons. */
+      .topbar-actions { display: contents; }
+      .topbar-more, .topbar-scrim, .side-close { display: none; }
+      .ctrl { position: relative; }
+      .ctrl-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #E8A33D; color: #1B1408; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+      /* shared by portrait phones and landscape phones */
+      @media (max-width: 720px), (max-height: 500px) and (orientation: landscape) {
+        .room { --ctrlbar-h: calc(72px + env(safe-area-inset-bottom, 0px)); }
+        .room button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+        input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { font-size: 16px !important; } /* below 16px iOS zooms the page when a field is focused */
+
+
+        .stage-switch button { flex: 1; justify-content: center; min-height: 40px; font-size: 13px; }
+        .control-strip { gap: 6px; }
+        .stage-actions { flex: 1 1 100%; gap: 8px; }
+        .nav-btn { min-height: 44px; padding: 0 14px; font-size: 14px; justify-content: center; }
+        .status-pill { min-height: 44px; display: flex; align-items: center; justify-content: center; padding: 4px 8px; font-size: 12px; line-height: 1.25; }
+        .stage-actions .explain-btn { min-height: 44px; }
+        .signal-row { flex: 1 1 100%; flex-wrap: nowrap; gap: 6px; margin-top: 0; }
+        .signal-label { display: none; }
+        .signal-btn { flex: 1; min-height: 40px; padding: 0 6px; font-size: 13px; }
+        .explain-select { flex: 1 1 100%; min-height: 40px; }
+        .paused-note, .adapt-note { flex: 1 1 100%; border-radius: 12px; text-align: center; }
+        .complete-banner { flex-direction: column; align-items: stretch; gap: 10px; }
+        .complete-banner .explain-btn { width: 100%; min-height: 44px; white-space: normal; }
+
+        .controlbar { height: var(--ctrlbar-h); padding: 8px 10px env(safe-area-inset-bottom, 0px); align-items: center; justify-content: space-around; gap: 6px; }
+        .ctrl { width: 52px; height: 52px; border-radius: 50%; flex: 0 0 auto; }
+        .ctrl.labeled { width: 52px; padding: 0; }
+        .ctrl.labeled span { display: none; }
+        .ctrl.leave { width: 68px; border-radius: 26px; }
+
+        /* chat: a sheet that slides up over the bottom of the slide, above the call controls */
+        .side-panel { position: fixed; z-index: 25; left: 0; right: 0; bottom: var(--ctrlbar-h); width: auto; flex: none; height: min(58dvh, 520px); background: #171C23; border-left: none; border-top: 1px solid #2F3A48; border-radius: 18px 18px 0 0; box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.5); overflow: hidden; animation: sheet-up 0.22s ease-out; }
+        @keyframes sheet-up { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+        .side-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 6px 8px 16px; font-size: 13px; }
+        .side-close { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; border: none; background: transparent; color: #8B93A1; cursor: pointer; }
+        .side-messages { padding: 10px 16px; }
+        .msg-text { font-size: 14.5px; line-height: 1.55; }
+        .side-input { padding: 10px 12px; }
+        .side-input input { min-height: 44px; padding: 0 12px; }
+        .side-input button { min-width: 48px; min-height: 44px; }
+      }
+
+      /* top bar: title + slide counter + "More" for phones, landscape phones and tablets (8 buttons don't fit a 768px bar either) */
+      @media (max-width: 900px), (max-height: 500px) and (orientation: landscape) {
+        .topbar { position: relative; min-height: 48px; gap: 8px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px; }
+        .topbar-title { flex: 1 1 auto; min-width: 0; font-size: 13px; }
+        .topbar-title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .topbar-right { flex: 0 0 auto; gap: 8px; }
+        .topbar-slide { white-space: nowrap; }
+        .topbar-slide-title, .topbar-budget { display: none; }
+        .topbar-more { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 10px; border: 1px solid #232A34; background: #1A1F27; color: #C7CCD4; cursor: pointer; }
+        .topbar-more[aria-expanded="true"] { background: #232A34; color: #EDEFF2; }
+        .topbar-scrim { display: block; position: fixed; inset: 0; z-index: 28; background: rgba(0, 0, 0, 0.35); }
+        .topbar-actions { display: none; position: absolute; z-index: 30; top: 100%; left: 8px; right: 8px; margin-top: 4px; flex-direction: column; gap: 4px; padding: 6px; background: #1A1F27; border: 1px solid #2F3A48; border-radius: 14px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55); max-height: calc(100dvh - 120px); overflow-y: auto; }
+        .topbar-actions.open { display: flex; }
+        .topbar-actions .topbar-edit { width: 100%; min-height: 46px; padding: 0 14px; gap: 10px; font-size: 14px; justify-content: flex-start; border-radius: 10px; }
+        .tts-notice { padding: 6px 12px; }
+      }
+
+      /* portrait phones: compact participant strip, slide-sized type */
+      @media (max-width: 720px) {
+        .main-col { padding: 6px 8px; gap: 6px; }
+        .tiles { height: 44px; gap: 8px; }
+        .tile { flex-direction: row; justify-content: flex-start; max-width: none; gap: 8px; padding: 0 10px; }
+        .avatar { width: 28px; height: 28px; font-size: 12px; }
+        .tile-label { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .stage { padding: 14px 14px 18px; }
+        .slide h2 { font-size: 22px; margin-bottom: 10px; }
+        .slide ul { font-size: 15px; line-height: 1.7; padding-left: 18px; }
+        .slide-detail { font-size: 14px; line-height: 1.7; }
+        .room.presentation .main-col { padding: 6px 8px; }
+        .room.presentation .stage { padding: 14px 14px 20px; }
+        .room.presentation .slide-eyebrow { font-size: 11px; }
+        .room.presentation .slide h2 { font-size: 26px; margin-bottom: 12px; }
+        .room.presentation .slide ul { font-size: 17px; line-height: 1.75; }
+        .room.presentation .slide ul li { margin-bottom: 8px; }
+        .room.presentation .slide-detail { font-size: 15.5px; margin-top: 12px; padding-top: 10px; }
+        .join-screen, .setup-screen { padding-left: 16px; padding-right: 16px; }
+        .module-row, .course-card-head { flex-wrap: wrap; gap: 8px; }
+        .preview-actions { flex-wrap: wrap; }
+      }
+      /* short screens: not enough height for the participant strip */
+      @media (max-width: 720px) and (max-height: 700px) { .tiles { display: none; } }
+
+      /* landscape phones: slide on the left, chat docked on the right, slim bars */
+      @media (max-height: 500px) and (orientation: landscape) {
+        .room { --ctrlbar-h: calc(56px + env(safe-area-inset-bottom, 0px)); }
+        .tiles { display: none; }
+        .topbar { min-height: 40px; padding-top: 3px; padding-bottom: 3px; }
+        .main-col { padding: 4px 8px; gap: 4px; }
+        .stage { padding: 10px 14px; }
+        .slide h2 { font-size: 20px; margin-bottom: 8px; }
+        .controlbar { padding-top: 4px; }
+        .ctrl { width: 44px; height: 44px; }
+        .ctrl.labeled { width: 44px; }
+        .ctrl.leave { width: 60px; }
+        .side-panel { top: 0; left: auto; right: 0; width: min(340px, 55vw); height: auto; border-radius: 0; border-top: none; border-left: 1px solid #2F3A48; }
+        .stage-switch button { flex: 0 0 auto; min-height: 32px; padding: 4px 14px; }
+        .control-strip { gap: 6px; }
+        .stage-actions { flex: 1 1 280px; }
+        .nav-btn, .status-pill, .stage-actions .explain-btn { min-height: 40px; }
+        .signal-row { flex: 0 0 auto; }
+        .signal-btn { flex: 0 0 auto; min-height: 36px; padding: 0 12px; }
+        .explain-select { flex: 0 1 170px; min-height: 36px; }
+        .paused-note, .adapt-note { flex: 0 1 auto; }
       }
 
       /* Accessibility: a strong, consistent keyboard focus ring, applied
