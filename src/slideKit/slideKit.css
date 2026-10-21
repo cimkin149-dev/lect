@@ -197,3 +197,27 @@ tr.sk-focus > th, tr.sk-focus > td { background: rgba(232, 163, 61, 0.12); }
 /* Pause */
 .paused-note { font-size: 12.5px; color: #F5D9A4; background: rgba(232,163,61,0.12); border: 1px solid rgba(232,163,61,0.45); border-radius: 999px; padding: 5px 14px; }
 .ctrl.raised { background: #E8A33D; color: #1B1408; }
+
+/* Phones: slide content sized for a narrow screen; wide diagrams keep a readable size and scroll sideways */
+@media (max-width: 720px) {
+  .sk-def { padding: 12px 14px; }
+  .sk-def-term { font-size: 19px; }
+  .sk-def-text { font-size: 15px; }
+  .sk-table { font-size: 13px; }
+  .sk-table th, .sk-table td { padding: 7px 9px; }
+  .sk-problem p, .sk-final p { font-size: 15px; }
+  .sk-step { padding: 6px 10px; }
+  .check-question { font-size: 15px; }
+  .check-option { font-size: 14px; padding: 12px; min-height: 44px; }
+  .room.presentation .check-question { font-size: 17px; }
+  .room.presentation .check-option { font-size: 15px; }
+  .sk-diagram { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .sk-diagram svg { max-width: none !important; width: max(100%, min(var(--sk-natural-w, 0px), 560px)); }
+  /* code: wrap long lines instead of hiding the end of them, so a student can follow along without sideways scrolling */
+  .sk-ide-body, .room.presentation .sk-ide-body { font-size: 13.5px; line-height: 1.65; }
+  .sk-line { padding-right: 10px; }
+  .sk-line, .sk-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .sk-code { min-width: 0; flex: 1 1 auto; }
+  .sk-ln { flex: 0 0 auto; }
+  .sk-run-btn { min-height: 40px; }
+}
