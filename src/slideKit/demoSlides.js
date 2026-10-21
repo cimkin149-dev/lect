@@ -84,9 +84,9 @@ export const DEMO_SHOWCASE_SLIDES = [
     },
     diagram: {
       code: `flowchart LR
-  A["Source code (.java)"] -->|javac| B["Bytecode (.class)"]
-  B -->|java| C["JVM"]
-  C --> D["Program output"]`,
+  A[/"Source code (.java)"/] -->|javac| B["Bytecode (.class)"]
+  B -->|java| C{{"JVM"}}
+  C --> D(["Program output"])`,
       caption: "The compile-then-run pipeline in Java",
     },
   },
