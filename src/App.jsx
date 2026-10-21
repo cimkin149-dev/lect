@@ -12,6 +12,7 @@ import { buildLectureNotesPdf } from "./slideKit/notesPdf.js";
 import { scrollTopForBlock } from "./slideKit/scroll.js";
 import { extractBlocks, matchSentenceToBlock } from "./slideKit/focus.js";
 import { logTiming, getTimingSummary } from "./telemetry.js";
+import { logClientError } from "./errorLogging.jsx";
 import { startTracking, track, flushEvents, stopTracking, getStudentKey, slideKeyFor, postStandaloneEvents } from "./analytics.js";
 import { attentionScore, heatLevel, whyFlagged, formatDwell } from "./slideKit/insights.js";
 import CheckCard from "./slideKit/CheckCard.jsx";
@@ -20,6 +21,9 @@ import { summarizeBreakdown, commonMisconceptions, weakConcepts } from "./learni
 import { pickCorrections, correctionsPromptBlock } from "./learning/corrections.js";
 import { ConceptTable, MisconceptionList } from "./learning/ClassInsights.jsx";
 import MasteryPanel from "./learning/MasteryPanel.jsx";
+import RosterPanel from "./learning/RosterPanel.jsx";
+import { moduleToSetup, applyModuleSave, removeModule, duplicateModule, moveItem, blankSlide, courseDeleteConfirmed, nextActiveCourseId } from "./courseCrud.js";
+import { usernameError, normalizeUsername, fullNameError, cleanFullName, suggestUsername, friendlySignupError } from "./studentProfile.js";
 import PracticePanel from "./learning/PracticePanel.jsx";
 import { planForSlide, adaptationPrompt, adaptWordBudget, adaptationLabel, emptySession, conceptsMatch, EXPLAIN_REQUESTS } from "./learning/adaptation.js";
 import { generatePractice } from "./learning/practice.js";
@@ -303,8 +307,8 @@ async function authRequest(path, body) {
   return data;
 }
 
-async function signUpUser(email, password) {
-  const data = await authRequest("/signup", { email, password });
+async function signUpUser(email, password, metadata = null) {
+  const data = await authRequest("/signup", metadata ? { email, password, data: metadata } : { email, password });
   // If email confirmation is required, Supabase returns a user object with
   // no access_token yet — the account exists but can't sign in until
   // confirmed. Both cases are handled by the caller.
@@ -331,6 +335,34 @@ async function signOutUser(accessToken) {
     });
   } catch (e) {
     /* best-effort — clearing local session is what actually matters */
+  }
+}
+
+// ---- Student profiles: real full name + unique username -------------------
+// Returns true/false, or null when the database can't say (so the form never blocks on it).
+async function checkUsernameAvailable(username) {
+  try {
+    const r = await supabaseRequest("/rpc/username_available", { method: "POST", body: JSON.stringify({ p_username: username }) });
+    return typeof r === "boolean" ? r : null;
+  } catch (e) {
+    return null;
+  }
+}
+// A profile object, null when the student has none yet, or undefined when it couldn't be checked.
+async function fetchStudentProfile(session) {
+  try {
+    const rows = await supabaseRequest(`/student_profiles?select=username,full_name&user_id=eq.${session.user.id}`, {}, session.accessToken);
+    return Array.isArray(rows) && rows.length ? { username: rows[0].username, fullName: rows[0].full_name } : null;
+  } catch (e) {
+    return undefined;
+  }
+}
+async function createStudentProfile(session, { username, fullName }) {
+  try {
+    await supabaseRequest("/student_profiles", { method: "POST", body: JSON.stringify({ user_id: session.user.id, username: normalizeUsername(username), full_name: cleanFullName(fullName) }) }, session.accessToken);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, taken: /409|23505|duplicate/i.test(String(e && e.message)), message: String((e && e.message) || "") };
   }
 }
 
@@ -422,6 +454,8 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
     "/modules",
     {
       method: "POST",
+      // Upsert: saving an edited module must update the existing row, not collide on its id.
+      headers: { Prefer: "resolution=merge-duplicates,return=representation" },
       body: JSON.stringify([
         {
           id: module.id,
@@ -437,6 +471,15 @@ async function saveModuleToSupabase(courseId, module, accessToken) {
     accessToken
   );
 }
+
+// Row-level security makes a delete of someone else's row (or a missing one) succeed with
+// zero rows, so ask for the deleted rows back and treat "none" as a failure.
+async function deleteRowFromSupabase(table, id, accessToken) {
+  const rows = await supabaseRequest(`/${table}?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" }, accessToken);
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("Nothing was deleted. You can only delete courses and modules you own.");
+}
+const deleteModuleFromSupabase = (id, token) => deleteRowFromSupabase("modules", id, token);
+const deleteCourseFromSupabase = (id, token) => deleteRowFromSupabase("courses", id, token);
 
 // AI confidence/escalation: when the AI isn't confident in an answer, the
 // question gets written here (public insert — students have no login) for
@@ -1348,18 +1391,45 @@ function AuthScreen({ onAuthenticated, onBack, onOpenLegal, role = "lecturer" })
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmNotice, setConfirmNotice] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
+  const [usernameTouched, setUsernameTouched] = useState(false);
+  const [usernameState, setUsernameState] = useState(""); // "", checking, free, taken
+  const studentSignup = role === "student" && mode === "signup";
+
+  // Suggest a username from the name until the student types their own.
+  useEffect(() => {
+    if (studentSignup && !usernameTouched) setUsername(suggestUsername(fullName));
+  }, [fullName, studentSignup, usernameTouched]);
+  // Check the username is free (after a short pause while typing).
+  useEffect(() => {
+    if (!studentSignup) return undefined;
+    const u = normalizeUsername(username);
+    if (usernameError(u)) { setUsernameState(""); return undefined; }
+    setUsernameState("checking");
+    let cancelled = false;
+    const t = setTimeout(() => {
+      checkUsernameAvailable(u).then((free) => { if (!cancelled) setUsernameState(free === null ? "" : free ? "free" : "taken"); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [username, studentSignup]);
 
   const submit = async () => {
     if (!email.trim() || !password) {
       setError("Enter an email and password.");
       return;
     }
+    if (studentSignup) {
+      const problem = fullNameError(fullName) || usernameError(username);
+      if (problem) { setError(problem); return; }
+      if (usernameState === "taken") { setError("That username is taken. Try another."); return; }
+    }
     setError("");
     setConfirmNotice(false);
     setBusy(true);
     try {
       if (mode === "signup") {
-        const result = await signUpUser(email.trim(), password);
+        const result = await signUpUser(email.trim(), password, studentSignup ? { full_name: cleanFullName(fullName), username: normalizeUsername(username) } : null);
         if (result.needsConfirmation) {
           setConfirmNotice(true);
           setBusy(false);
@@ -1371,7 +1441,7 @@ function AuthScreen({ onAuthenticated, onBack, onOpenLegal, role = "lecturer" })
         onAuthenticated(session);
       }
     } catch (e) {
-      setError(e.message || "Something went wrong — try again.");
+      setError(friendlySignupError(e.message) || "Something went wrong — try again.");
       setBusy(false);
     }
   };
@@ -1397,6 +1467,15 @@ function AuthScreen({ onAuthenticated, onBack, onOpenLegal, role = "lecturer" })
           </div>
         ) : (
           <>
+            {studentSignup && (
+              <>
+                <input className="join-input" placeholder="Your full name (as on your student record)" aria-label="Full name" autoComplete="name" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+                <input className="join-input" placeholder="Choose a username" aria-label="Username" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(e) => { setUsernameTouched(true); setUsername(e.target.value); }} />
+                <div role="status" style={{ fontSize: 12, margin: "-4px 0 8px", textAlign: "left", color: usernameState === "taken" ? "#FFB4A6" : usernameState === "free" ? "#BFEAD3" : "#8890A0" }}>
+                  {usernameState === "checking" ? "Checking…" : usernameState === "free" ? `@${normalizeUsername(username)} is available` : usernameState === "taken" ? "That username is taken" : usernameError(username) && username ? usernameError(username) : "Your lecturer sees your name and username, so use your real name."}
+                </div>
+              </>
+            )}
             <input className="join-input" type="email" placeholder="Email" aria-label="Email address" value={email} onChange={(e) => setEmail(e.target.value)} />
             <input
               className="join-input"
@@ -1652,7 +1731,8 @@ function SlideAdvancedEditor({ slide: s, onChange }) {
 
 function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndPreview, onCancel }) {
   const fileInputRef = useRef(null);
-  const { moduleSettings, rawText, fileName, draft, phase, error } = setup;
+  const { moduleSettings, rawText, fileName, draft, phase, error, editingModuleId, editingCreatedAt } = setup;
+  const editing = !!editingModuleId;
   const [genProgress, setGenProgress] = useState("");
 
   const updateModuleSettings = (patch) => patchSetup({ moduleSettings: { ...moduleSettings, ...patch } });
@@ -1701,14 +1781,16 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
   };
 
   const buildModuleObject = () => ({
-    id: makeId("module"),
+    id: editingModuleId || makeId("module"),
     unit: moduleSettings.unitTitle || draft.unit || "Untitled module",
     durationMinutes: moduleSettings.durationMinutes,
     pace: moduleSettings.pace,
     allowLiveCode: moduleSettings.allowLiveCode,
     slides: draft.slides.map((sl, i) => normalizeSlide(sl, i)),
-    createdAt: Date.now(),
+    createdAt: editingCreatedAt || Date.now(),
   });
+  const addSlide = () => patchSetup({ draft: { ...draft, slides: [...draft.slides, blankSlide()] } });
+  const moveSlide = (idx, dir) => patchSetup({ draft: { ...draft, slides: moveItem(draft.slides, idx, dir) } });
 
   const estimatedUnitCount = Math.max(1, rawText.split(/\n{2,}/).filter((s) => s.trim()).length);
   const liveBudget = draft
@@ -1718,9 +1800,9 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
   return (
     <div className="setup-screen">
       <div className="setup-header">
-        <div className="join-eyebrow">{course.code} · Add a module</div>
+        <div className="join-eyebrow">{course.code} · {editing ? "Edit module" : "Add a module"}</div>
         <h1 className="join-title">{course.title}</h1>
-        <p className="join-sub">Upload slides or notes for this module, tune the pacing, then review before saving. Voice and tone come from the course settings.</p>
+        <p className="join-sub">{editing ? "Change the title, slides, narration notes or code, then save. Students see the new version the next time they join." : "Upload slides or notes for this module, tune the pacing, then review before saving."} Voice and tone come from the course settings.</p>
         <button className="skip-link" onClick={onCancel}>← Back to dashboard</button>
       </div>
 
@@ -1825,9 +1907,21 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
 
       {phase === "preview" && draft && (
         <div className="preview-wrap">
+          {editing && (
+            <div className="setup-grid" style={{ marginBottom: 12 }}>
+              <div className="setup-col">
+                <div className="setup-label">Module title</div>
+                <input className="setup-input" aria-label="Module title" value={moduleSettings.unitTitle} onChange={(e) => updateModuleSettings({ unitTitle: e.target.value })} />
+              </div>
+              <div className="setup-col">
+                <div className="setup-label">Length (minutes)</div>
+                <input className="setup-input" type="number" min={5} max={240} aria-label="Module length in minutes" value={moduleSettings.durationMinutes} onChange={(e) => updateModuleSettings({ durationMinutes: Math.max(5, Math.min(240, Number(e.target.value) || 45)) })} />
+              </div>
+            </div>
+          )}
           <div className="preview-toolbar">
             <div>
-              <strong>{course.code}</strong> — {draft.unit || moduleSettings.unitTitle}
+              <strong>{course.code}</strong> — {editing ? moduleSettings.unitTitle || draft.unit : draft.unit || moduleSettings.unitTitle}
             </div>
             <div className="budget-readout">≈ {computeWordBudget(moduleSettings.durationMinutes, draft.slides.length, moduleSettings.pace)} words/slide · {draft.slides.length} slides</div>
           </div>
@@ -1838,6 +1932,8 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
                 <div className="slide-card-head">
                   <span className="sk-type-chip" title="Slide type">{TYPE_LABELS[s.type] || "Concept"}</span>
                   <input className="slide-card-title" aria-label={`Slide ${i + 1} title`} value={s.title} onChange={(e) => editSlide(i, { title: e.target.value })} />
+                  <button className="icon-btn" onClick={() => moveSlide(i, -1)} disabled={i === 0} title="Move slide up" aria-label={`Move slide up: ${s.title}`}>↑</button>
+                  <button className="icon-btn" onClick={() => moveSlide(i, 1)} disabled={i === draft.slides.length - 1} title="Move slide down" aria-label={`Move slide down: ${s.title}`}>↓</button>
                   <button className="icon-btn" onClick={() => removeSlide(i)} title="Remove slide" aria-label={`Remove slide: ${s.title}`}><Trash2 size={14} /></button>
                 </div>
                 <textarea
@@ -1880,18 +1976,20 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
             ))}
           </div>
 
+          <button className="skip-link" onClick={addSlide}>+ Add a slide</button>
+
           {error && <div className="setup-error"><AlertTriangle size={13} /> {error}</div>}
 
           <div className="preview-actions">
-            <button className="nav-btn" onClick={() => patchSetup({ phase: "input", draft: null })}>
-              <RotateCcw size={14} /> Start over
+            <button className="nav-btn" onClick={() => { if (editing && !window.confirm("Discard your edits and regenerate this module from new material? The module keeps its place and its student history.")) return; patchSetup({ phase: "input", draft: null }); }}>
+              <RotateCcw size={14} /> {editing ? "Regenerate from new material" : "Start over"}
             </button>
             <div className="preview-actions-right">
               <button className="nav-btn" onClick={() => onSaveAndPreview(buildModuleObject())}>
-                Save &amp; preview as student
+                {editing ? "Save changes & preview" : "Save &amp; preview as student"}
               </button>
               <button className="explain-btn" onClick={() => onSaveModule(buildModuleObject())}>
-                Save module <ArrowRight size={14} />
+                {editing ? "Save changes" : "Save module"} <ArrowRight size={14} />
               </button>
             </div>
           </div>
@@ -1907,13 +2005,37 @@ function ModuleSetupScreen({ course, setup, patchSetup, onSaveModule, onSaveAndP
 // Students pick a course, then a module within it, then give their name.
 // Only courses with at least one saved module show up — a course with zero
 // modules is still "being built" and isn't joinable yet.
-function JoinScreen({ courses, onJoin, onBack, onOpenLegal, studentSession, onStudentSignIn, onStudentSignOut, onViewMyHistory }) {
+function JoinScreen({ courses, onJoin, onBack, onOpenLegal, studentSession, studentProfile, onSaveProfile, onStudentSignIn, onStudentSignOut, onViewMyHistory }) {
   const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [selectedModuleId, setSelectedModuleId] = useState(null);
-  const [name, setName] = useState(studentSession ? studentSession.user.email.split("@")[0] : "");
+  const [name, setName] = useState(studentProfile ? studentProfile.fullName : studentSession ? studentSession.user.email.split("@")[0] : "");
+  useEffect(() => { if (studentProfile) setName(studentProfile.fullName); }, [studentProfile]);
+  // A signed-in student with no profile yet picks a real name and username first.
+  const needsProfile = !!studentSession && studentProfile === null;
+  const [pFull, setPFull] = useState("");
+  const [pUser, setPUser] = useState("");
+  const [pUserTouched, setPUserTouched] = useState(false);
+  const [pErr, setPErr] = useState("");
+  const [pBusy, setPBusy] = useState(false);
+  useEffect(() => { if (needsProfile && !pUserTouched) setPUser(suggestUsername(pFull)); }, [pFull, needsProfile, pUserTouched]);
+  const saveProfile = async () => {
+    const problem = fullNameError(pFull) || usernameError(pUser);
+    if (problem) { setPErr(problem); return; }
+    setPBusy(true); setPErr("");
+    const r = await onSaveProfile({ fullName: pFull, username: pUser });
+    setPBusy(false);
+    if (!r.ok) setPErr(r.taken ? "That username is taken. Try another." : "Couldn't save your profile. Try again.");
+  };
   const [research, setResearch] = useState(() => {
     try { return localStorage.getItem("semai_research_consent") === "1"; } catch (e) { return false; }
   });
+  const [share, setShare] = useState(() => {
+    try { return localStorage.getItem("semai_share_lecturer") !== "0"; } catch (e) { return true; }
+  });
+  const changeShare = (v) => {
+    setShare(v);
+    try { localStorage.setItem("semai_share_lecturer", v ? "1" : "0"); } catch (e) { /* ignore */ }
+  };
   const changeResearch = (v) => {
     setResearch(v);
     try { localStorage.setItem("semai_research_consent", v ? "1" : "0"); } catch (e) { /* ignore */ }
@@ -1987,28 +2109,42 @@ function JoinScreen({ courses, onJoin, onBack, onOpenLegal, studentSession, onSt
 
         {studentSession ? (
           <div className="signed-in-badge">
-            Signed in as {studentSession.user.email}
+            {studentProfile ? `Joining as ${studentProfile.fullName} (@${studentProfile.username})` : `Signed in as ${studentSession.user.email}`}
             <button className="skip-link inline" onClick={onStudentSignOut}>Not you?</button>
           </div>
         ) : null}
 
-        <input
-          className="join-input"
-          placeholder="Your name"
-          aria-label="Your name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && name.trim() && onJoin(course, module_, name, research)}
-        />
+        {needsProfile ? (
+          <div style={{ marginBottom: 12 }}>
+            <p className="join-hint" style={{ textAlign: "left" }}>Before you join, add your real name and choose a unique username. Your lecturer will see both if you share your progress.</p>
+            <input className="join-input" placeholder="Your full name" aria-label="Full name" value={pFull} onChange={(e) => setPFull(e.target.value)} />
+            <input className="join-input" placeholder="Choose a username" aria-label="Username" autoCapitalize="none" spellCheck={false} value={pUser} onChange={(e) => { setPUserTouched(true); setPUser(e.target.value); }} />
+            {pErr && <div className="setup-error" style={{ justifyContent: "center" }}><AlertTriangle size={13} /> {pErr}</div>}
+            <button className="join-btn" disabled={pBusy} onClick={saveProfile}>{pBusy ? <Loader2 className="spin" size={14} /> : null} Save and continue</button>
+          </div>
+        ) : !studentProfile ? (
+          <input
+            className="join-input"
+            placeholder="Your name"
+            aria-label="Your name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && name.trim() && onJoin(course, module_, name, research, share)}
+          />
+        ) : null}
+        <label className="consent-row">
+          <input type="checkbox" checked={share} onChange={(e) => changeShare(e.target.checked)} />
+          <span>Let my lecturer see my individual progress (my name, my quiz results and where I felt lost) so they can help me in class. Untick to stay anonymous. You can change this each time you join.</span>
+        </label>
         <label className="consent-row">
           <input type="checkbox" checked={research} onChange={(e) => changeResearch(e.target.checked)} />
           <span>Optional: let an anonymised copy of my learning activity be used for education research. You can change this any time.</span>
         </label>
         <div className="join-hint" style={{ textAlign: "left", marginBottom: 16 }}>
-          Your lecturer is shown how students interact with each lecture (slides viewed, quiz answers, questions) to improve it, and to personalise your learning. This never includes your name or email.{" "}
+          Your lecturer is shown how students interact with each lecture (slides viewed, quiz answers, questions) to improve it, and to personalise your learning. Unless you share your progress above, this never includes your name or email.{" "}
           <button className="skip-link inline" onClick={() => onOpenLegal && onOpenLegal("privacy")}>Privacy Policy</button>
         </div>
-        <button className="join-btn" disabled={!name.trim()} onClick={() => onJoin(course, module_, name, research)}>
+        <button className="join-btn" disabled={!name.trim() || needsProfile} onClick={() => onJoin(course, module_, name, research, share)}>
           Join lecture
         </button>
         <div className="join-hint">Mic + speaker recommended. The lecturer speaks aloud and you can interrupt anytime.</div>
@@ -2331,7 +2467,14 @@ function MyHistoryScreen({ session, courses, onBack, onAccountDeleted, onOpenLeg
 // far, and the two things a lecturer actually needs from here — add
 // another module to a course, or preview one as a student would see it.
 // Saving a module always lands back here, never in a live session.
-function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccountDeleted, onOpenLegal, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onBack, onSignOut, onViewInsights }) {
+function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccountDeleted, onOpenLegal, onNewCourse, onEditCourse, onAddModule, onPreviewModule, onEditModule, onDuplicateModule, onDeleteModule, onDeleteCourse, notice, onDismissNotice, onBack, onSignOut, onViewInsights }) {
+  const [confirm, setConfirm] = useState(null); // { kind: "module" | "course", id }
+  const [typedCode, setTypedCode] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const runDelete = async (kind, course, module_) => {
+    setBusyId(kind === "course" ? course.id : module_.id);
+    try { await (kind === "course" ? onDeleteCourse(course) : onDeleteModule(course, module_)); } finally { setBusyId(null); setConfirm(null); setTypedCode(""); }
+  };
   const statusLabel = {
     connected: { text: "Connected to Supabase — courses persist across refreshes", cls: "ok" },
     loading: { text: "Connecting to Supabase…", cls: "loading" },
@@ -2352,6 +2495,12 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccoun
       </div>
 
       {statusLabel && <div className={`db-status ${statusLabel.cls}`}>{statusLabel.text}</div>}
+      {notice && (
+        <div className={`db-status ${notice.kind === "error" ? "warn" : "ok"}`} role={notice.kind === "error" ? "alert" : "status"} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <span>{notice.text}</span>
+          <button className="skip-link inline" onClick={onDismissNotice} aria-label="Dismiss message">Dismiss</button>
+        </div>
+      )}
 
       <div className="dash-toolbar">
         <button className="explain-btn" onClick={onNewCourse}><Sparkles size={14} /> New course</button>
@@ -2374,8 +2523,24 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccoun
                 <button className="icon-btn" onClick={() => onEditCourse(course)} title="Edit course details" aria-label={`Edit ${course.code} details`}>
                   <Settings2 size={14} />
                 </button>
+                <button className="icon-btn" onClick={() => { setConfirm({ kind: "course", id: course.id }); setTypedCode(""); }} title="Delete this course" aria-label={`Delete course ${course.code}`}>
+                  <Trash2 size={14} />
+                </button>
               </div>
             </div>
+            {confirm && confirm.kind === "course" && confirm.id === course.id && (
+              <div className="sk-warnings" role="alertdialog" aria-label={`Delete ${course.code}`}>
+                <strong>Delete {course.code} and everything in it?</strong>
+                <p style={{ margin: "6px 0" }}>This permanently removes the course, its {course.modules.length} module{course.modules.length === 1 ? "" : "s"}, all student session records, quiz data and flagged questions. It cannot be undone. Type <strong>{course.code}</strong> to confirm.</p>
+                <input className="setup-input" aria-label="Type the course code to confirm" value={typedCode} onChange={(e) => setTypedCode(e.target.value)} autoCapitalize="none" />
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button className="nav-btn" onClick={() => { setConfirm(null); setTypedCode(""); }}>Cancel</button>
+                  <button className="explain-btn" disabled={!courseDeleteConfirmed(course, typedCode) || busyId === course.id} onClick={() => runDelete("course", course)}>
+                    {busyId === course.id ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />} Delete course
+                  </button>
+                </div>
+              </div>
+            )}
 
             {course.modules.length === 0 ? (
               <div className="empty-hint">No modules yet — add the first one below.</div>
@@ -2387,7 +2552,24 @@ function LecturerDashboard({ courses, dbStatus, lecturerEmail, account, onAccoun
                       <div className="module-row-title">{m.unit}</div>
                       <div className="module-row-meta">{m.durationMinutes} min · {PACE_OPTIONS.find((p) => p.id === m.pace)?.label} · {m.slides.length} slides</div>
                     </div>
-                    <button className="nav-btn" onClick={() => onPreviewModule(course, m)}>Preview as student</button>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <button className="nav-btn" onClick={() => onPreviewModule(course, m)}>Preview as student</button>
+                      <button className="nav-btn" onClick={() => onEditModule(course, m)} aria-label={`Edit module ${m.unit}`}>Edit</button>
+                      <button className="nav-btn" onClick={() => onDuplicateModule(course, m)} aria-label={`Duplicate module ${m.unit}`}>Duplicate</button>
+                      <button className="icon-btn" onClick={() => setConfirm({ kind: "module", id: m.id })} title="Delete this module" aria-label={`Delete module ${m.unit}`}><Trash2 size={14} /></button>
+                    </div>
+                    {confirm && confirm.kind === "module" && confirm.id === m.id && (
+                      <div className="sk-warnings" role="alertdialog" aria-label={`Delete ${m.unit}`} style={{ flexBasis: "100%" }}>
+                        <strong>Delete “{m.unit}”?</strong>
+                        <p style={{ margin: "6px 0" }}>This permanently removes the module with its student sessions, quiz data and flagged questions. It cannot be undone. To keep the data, edit the module instead.</p>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button className="nav-btn" onClick={() => setConfirm(null)}>Cancel</button>
+                          <button className="explain-btn" disabled={busyId === m.id} onClick={() => runDelete("module", course, m)}>
+                            {busyId === m.id ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />} Delete module
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2584,6 +2766,11 @@ function CourseInsightsScreen({ course, session, onBack }) {
     load();
   }, [load]);
 
+  const loadStudentRows = useCallback(
+    (moduleId) => supabaseRequest("/rpc/module_student_roster", { method: "POST", body: JSON.stringify({ p_module_id: moduleId }) }, session && session.accessToken),
+    [session]
+  );
+
   const approveFlag = async (flagId, question, answer) => {
     await approveFlaggedQuestion(flagId, question, answer, session?.accessToken);
     setFlags((fs) => fs.map((f) => (f.id === flagId ? { ...f, resolved: true, approved_question: question, lecturer_answer: answer } : f)));
@@ -2631,6 +2818,7 @@ function CourseInsightsScreen({ course, session, onBack }) {
           )}
 
           <SlideAnalyticsPanel course={course} session={session} />
+          <RosterPanel course={course} loadRows={loadStudentRows} />
 
           <div className="flag-section">
             <div className="flag-section-title">Sessions</div>
@@ -2703,8 +2891,30 @@ function CourseInsightsScreen({ course, session, onBack }) {
 const PHONE_QUERY = "(max-width: 720px), (max-height: 500px) and (orientation: landscape)";
 const isPhoneScreen = () => { try { return !!(window.matchMedia && window.matchMedia(PHONE_QUERY).matches); } catch (e) { return false; } };
 
-export { LectureRoom };
-function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, researchConsent, role, onLeave, onEditSession }) {
+
+// Catches a render error inside one slide so the rest of the lecture room (controls,
+// Prev/Next, chat) keeps working. It resets itself when the slide or view changes.
+class SlideBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null, key: props.resetKey }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  static getDerivedStateFromProps(props, state) { return props.resetKey !== state.key ? { err: null, key: props.resetKey } : null; }
+  componentDidCatch(error, info) {
+    logClientError("react.slide", error, { componentStack: String((info && info.componentStack) || "").slice(0, 1500), slide: this.props.resetKey });
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div role="alert" style={{ padding: 24, textAlign: "center", color: "#EDEFF2" }}>
+        <p style={{ margin: "0 0 12px", fontSize: 15 }}>This slide couldn't be shown. Use Prev / Next to move on.</p>
+        <p style={{ margin: "0 0 14px", fontSize: 12, opacity: 0.6 }}>{String((this.state.err && this.state.err.message) || this.state.err).slice(0, 160)}</p>
+        <button onClick={this.props.onShowSlides} style={{ background: "#EDEFF2", color: "#14181C", border: "none", borderRadius: 8, padding: "8px 14px", fontWeight: 600, cursor: "pointer" }}>Show slide view</button>
+      </div>
+    );
+  }
+}
+
+export { LectureRoom, AuthScreen, JoinScreen, LecturerDashboard, ModuleSetupScreen };
+function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, studentSession, researchConsent, shareWithLecturer, role, onLeave, onEditSession }) {
   const [slideIndex, setSlideIndex] = useState(0);
   // bumped whenever the student jumps to another slide by hand, so teaching work still in flight for the slide they left can tell it is out of date
   const navTokenRef = useRef(0);
@@ -2858,7 +3068,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
       consent: !!researchConsent,
       getToken: studentSession ? () => studentSession.accessToken : null,
     });
-    track("session_start", null, { total_slides: curriculum.slides.length, signed_in: !!studentSession, device: typeof window !== "undefined" && window.innerWidth < 700 ? "phone" : "desktop" });
+    track("session_start", null, { share: !!shareWithLecturer, ...(shareWithLecturer && studentName ? { name: String(studentName).trim().slice(0, 60) } : {}), total_slides: curriculum.slides.length, signed_in: !!studentSession, device: typeof window !== "undefined" && window.innerWidth < 700 ? "phone" : "desktop" });
     return () => {
       leaveSlideTracking();
       flushEvents();
@@ -3047,9 +3257,14 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
   // resulting Q&A to finish before continuing.
   const speakInterruptible = useCallback(
     async (text, { onDurationKnown, onStart, bypassPause } = {}) => {
+      // If the student presses Prev/Next while this line is waiting (paused) or
+      // still downloading, the line belongs to a slide that is no longer shown
+      // and must not start playing afterwards.
+      const speakToken = navTokenRef.current;
+      const navMoved = () => !mountedRef.current || navTokenRef.current !== speakToken;
       if (!bypassPause) {
-        while (pausedRef.current && mountedRef.current) await new Promise((r) => setTimeout(r, 200));
-        if (!mountedRef.current) return false;
+        while (pausedRef.current && mountedRef.current && !navMoved()) await new Promise((r) => setTimeout(r, 200));
+        if (navMoved()) return false;
       }
       const tSpeak = performance.now();
       let startLogged = false;
@@ -3081,6 +3296,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
           });
           if (!res.ok) throw new Error(`ElevenLabs request failed (${res.status})`);
           const blob = await res.blob();
+          if (navMoved()) return false;
           const fetchMs = Math.round(performance.now() - tSpeak); // the whole sentence is downloaded before playback begins
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
@@ -3112,6 +3328,7 @@ function LectureRoom({ curriculum, settings, courseId, moduleId, studentName, st
               : "Couldn't reach ElevenLabs for that line — used the browser voice instead."
           );
           if (blockedByAutoplay) setAudioBlocked(true);
+          if (navMoved()) return false;
           // falls through to the browser voice below (it may also be blocked,
           // but is worth trying — browsers treat speechSynthesis and
           // HTMLMediaElement autoplay policy somewhat differently)
@@ -3943,6 +4160,7 @@ ${NATURAL_SPEECH_STYLE}`;
             role="region"
             aria-label="Lecture slide"
           >
+            <SlideBoundary resetKey={`${slideIndex}:${view}`} onShowSlides={() => setViewMode("slides")}>
             {view === "slides" ? (
               <SlideView
                 slide={slide}
@@ -3977,6 +4195,7 @@ ${NATURAL_SPEECH_STYLE}`;
                 )}
               </div>
             )}
+            </SlideBoundary>
             {activeCheck && activeCheck.index === slideIndex && (
               <CheckCard state={activeCheck} onChoose={chooseCheckOption} onConfidence={finishCheck} onSkip={skipCheck} />
             )}
@@ -4132,12 +4351,16 @@ export default function SEMAIApp() {
   const [role, setRole] = useState(null);
   const [courses, setCourses] = useState([DEFAULT_COURSE]);
   const [activeCourseId, setActiveCourseId] = useState(null);
+  const [notice, setNotice] = useState(null); // { kind: "error" | "ok", text }
   const [courseDraft, setCourseDraft] = useState(null);
   const [insightsCourse, setInsightsCourse] = useState(null);
   const [editingCourse, setEditingCourse] = useState(false);
   const [roomData, setRoomData] = useState(null); // { curriculum, settings }
   const [studentName, setStudentName] = useState("Student");
   const [researchConsent, setResearchConsent] = useState(false);
+  const [shareWithLecturer, setShareWithLecturer] = useState(false);
+  // null = signed in but no profile yet, undefined = unknown / not loaded, object = {username, fullName}
+  const [studentProfile, setStudentProfile] = useState(undefined);
   const [dbStatus, setDbStatus] = useState(supabaseEnabled() ? "loading" : "local"); // loading | connected | error | local
   const [session, setSession] = useState(null); // { accessToken, refreshToken, user: {id, email} } | null
   const [studentSession, setStudentSession] = useState(null); // same shape, separate identity/storage — a student account isn't a lecturer account
@@ -4157,6 +4380,19 @@ export default function SEMAIApp() {
       })
       .catch(() => saveSessionLocally(null)); // stored session is stale/invalid — just drop it
   }, []);
+
+  // Load the signed-in student's profile (real name + username).
+  useEffect(() => {
+    if (!studentSession || !supabaseEnabled()) { setStudentProfile(undefined); return undefined; }
+    let cancelled = false;
+    fetchStudentProfile(studentSession).then((p) => { if (!cancelled) setStudentProfile(p); });
+    return () => { cancelled = true; };
+  }, [studentSession && studentSession.user.id]);
+  const handleSaveProfile = async (values) => {
+    const r = await createStudentProfile(studentSession, values);
+    if (r.ok) setStudentProfile({ username: normalizeUsername(values.username), fullName: cleanFullName(values.fullName) });
+    return r;
+  };
 
   // Same idea, independently, for a student account.
   useEffect(() => {
@@ -4200,6 +4436,8 @@ export default function SEMAIApp() {
     draft: null,
     phase: "input", // input | extracting | generating | preview
     error: "",
+    editingModuleId: null, // set when an existing module is being edited
+    editingCreatedAt: null,
   });
   const [setup, setSetupState] = useState(emptySetup);
   const patchSetup = (patch) => setSetupState((s) => ({ ...s, ...patch }));
@@ -4281,7 +4519,7 @@ export default function SEMAIApp() {
     setCourses((cs) => (cs.some((c) => c.id === courseDraft.id) ? cs.map((c) => (c.id === courseDraft.id ? courseDraft : c)) : [...cs, courseDraft]));
     setActiveCourseId(courseDraft.id);
     if (supabaseEnabled()) {
-      saveCourseToSupabase(courseDraft, session?.accessToken).catch((e) => console.error("Supabase course save failed:", e));
+      saveCourseToSupabase(courseDraft, session?.accessToken).catch(reportSaveError("the course"));
     }
     if (editingCourse) {
       setStage("dashboard");
@@ -4300,25 +4538,68 @@ export default function SEMAIApp() {
   // Saving a module just adds it to the course and returns to the
   // dashboard — it does NOT open a live session. Only the explicit
   // "Save & preview as student" path does that.
+  const reportSaveError = (what) => (e) => {
+    console.error(`Supabase ${what} save failed:`, e);
+    setNotice({ kind: "error", text: `Couldn't save ${what} to the cloud, so it may be lost on refresh. ${String((e && e.message) || "").slice(0, 140)}` });
+  };
+
   const handleSaveModule = (moduleObj) => {
-    setCourses((cs) => cs.map((c) => (c.id === activeCourseId ? { ...c, modules: [...c.modules, moduleObj] } : c)));
+    const wasEdit = (courses.find((c) => c.id === activeCourseId)?.modules || []).some((m) => m.id === moduleObj.id);
+    setCourses((cs) => cs.map((c) => (c.id === activeCourseId ? applyModuleSave(c, moduleObj) : c)));
     if (supabaseEnabled()) {
-      saveModuleToSupabase(activeCourseId, moduleObj, session?.accessToken).catch((e) => console.error("Supabase module save failed:", e));
+      saveModuleToSupabase(activeCourseId, moduleObj, session?.accessToken).catch(reportSaveError("the module"));
     }
+    setNotice(wasEdit ? { kind: "ok", text: `Saved changes to “${moduleObj.unit}”.` } : null);
     setStage("dashboard");
   };
 
   const handleSaveAndPreview = (moduleObj) => {
     const course = courses.find((c) => c.id === activeCourseId);
-    const updatedCourse = { ...course, modules: [...course.modules, moduleObj] };
+    const updatedCourse = applyModuleSave(course, moduleObj);
     setCourses((cs) => cs.map((c) => (c.id === activeCourseId ? updatedCourse : c)));
     if (supabaseEnabled()) {
-      saveModuleToSupabase(activeCourseId, moduleObj, session?.accessToken).catch((e) => console.error("Supabase module save failed:", e));
+      saveModuleToSupabase(activeCourseId, moduleObj, session?.accessToken).catch(reportSaveError("the module"));
     }
     primeAudioForVoice();
     setRoomData(buildRoomData(updatedCourse, moduleObj));
     setStudentName("Lecturer (preview)");
     setStage("room");
+  };
+
+  const handleEditModule = (course, module) => {
+    setActiveCourseId(course.id);
+    setSetupState(moduleToSetup(module));
+    setNotice(null);
+    setStage("moduleSetup");
+  };
+
+  const handleDuplicateModule = (course, module) => {
+    const copy = duplicateModule(module, makeId("module"));
+    setCourses((cs) => cs.map((c) => (c.id === course.id ? applyModuleSave(c, copy) : c)));
+    if (supabaseEnabled()) saveModuleToSupabase(course.id, copy, session?.accessToken).catch(reportSaveError("the copy"));
+    setNotice({ kind: "ok", text: `Created “${copy.unit}”. Open Edit to rename it.` });
+  };
+
+  const handleDeleteModule = async (course, module) => {
+    try {
+      if (supabaseEnabled()) await deleteModuleFromSupabase(module.id, session?.accessToken);
+      setCourses((cs) => cs.map((c) => (c.id === course.id ? removeModule(c, module.id) : c)));
+      setNotice({ kind: "ok", text: `Deleted “${module.unit}”.` });
+    } catch (e) {
+      setNotice({ kind: "error", text: `Couldn't delete “${module.unit}”. ${String((e && e.message) || "").slice(0, 160)}` });
+    }
+  };
+
+  const handleDeleteCourse = async (course) => {
+    try {
+      if (supabaseEnabled()) await deleteCourseFromSupabase(course.id, session?.accessToken);
+      setCourses((cs) => cs.filter((c) => c.id !== course.id));
+      setActiveCourseId((cur) => nextActiveCourseId(courses, course.id, cur));
+      setInsightsCourse((cur) => (cur && cur.id === course.id ? null : cur));
+      setNotice({ kind: "ok", text: `Deleted course ${course.code}.` });
+    } catch (e) {
+      setNotice({ kind: "error", text: `Couldn't delete ${course.code}. ${String((e && e.message) || "").slice(0, 160)}` });
+    }
   };
 
   const handlePreviewModule = (course, module) => {
@@ -4328,9 +4609,10 @@ export default function SEMAIApp() {
     setStage("room");
   };
 
-  const handleJoin = (course, module, name, research) => {
+  const handleJoin = (course, module, name, research, share) => {
     primeAudioForVoice(); // must run inside this click-triggered call, not later in a useEffect
     setResearchConsent(!!research);
+    setShareWithLecturer(share !== false);
     setRoomData(buildRoomData(course, module));
     setStudentName(name);
     setStage("room");
@@ -4374,6 +4656,12 @@ export default function SEMAIApp() {
           onOpenLegal={openLegal}
           onNewCourse={handleNewCourse}
           onEditCourse={handleEditCourse}
+          onEditModule={handleEditModule}
+          onDuplicateModule={handleDuplicateModule}
+          onDeleteModule={handleDeleteModule}
+          onDeleteCourse={handleDeleteCourse}
+          notice={notice}
+          onDismissNotice={() => setNotice(null)}
           onAddModule={handleAddModule}
           onPreviewModule={handlePreviewModule}
           onBack={() => setStage("role")}
@@ -4413,6 +4701,8 @@ export default function SEMAIApp() {
           onOpenLegal={openLegal}
           onBack={() => setStage("role")}
           studentSession={studentSession}
+          studentProfile={studentProfile}
+          onSaveProfile={handleSaveProfile}
           onStudentSignIn={() => setStage("studentAuth")}
           onStudentSignOut={handleStudentSignOut}
           onViewMyHistory={() => setStage("myHistory")}
@@ -4433,6 +4723,7 @@ export default function SEMAIApp() {
           studentName={studentName}
           studentSession={role === "student" ? studentSession : null}
           researchConsent={researchConsent}
+          shareWithLecturer={shareWithLecturer}
           role={role}
           onLeave={handleLeaveRoom}
           onEditSession={role === "lecturer" ? () => setStage("dashboard") : null}
@@ -4493,7 +4784,7 @@ function GlobalStyles() {
       .course-card { background: #1E2530; border: 1px solid #232A34; border-radius: 12px; padding: 16px; }
       .course-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; margin-bottom: 10px; }
       .module-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
-      .module-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #1A1F27; border: 1px solid #232A34; border-radius: 9px; }
+      .module-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; align-items: center; padding: 10px 12px; background: #1A1F27; border: 1px solid #232A34; border-radius: 9px; }
       .module-row-title { font-size: 13px; color: #EDEFF2; margin-bottom: 2px; }
       .module-row-meta { font-size: 11px; color: #8890A0; }
       .flag-section { margin-bottom: 24px; }
