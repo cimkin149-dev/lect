@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from "react";
 
+// Width the drawing wants, read from the SVG's viewBox. On a phone a wide diagram keeps a readable size and scrolls sideways.
+const naturalWidth = (svg) => { const m = /viewBox="[-\d.]+ [-\d.]+ ([\d.]+) [\d.]+"/.exec(svg || ""); return m ? Math.round(parseFloat(m[1])) : 0; };
+
 let initialised = false;
 let counter = 0;
 
@@ -60,7 +63,7 @@ export default function DiagramView({ code, caption }) {
   return (
     <figure className="sk-figure">
       {state.status === "loading" && <div className="sk-skeleton" role="status" aria-label="Drawing diagram">Drawing diagram…</div>}
-      {state.status === "ok" && <div className="sk-diagram" role="img" aria-label={caption || "Diagram"} dangerouslySetInnerHTML={{ __html: state.svg }} />}
+      {state.status === "ok" && <div className="sk-diagram" role="img" aria-label={caption || "Diagram"} style={{ "--sk-natural-w": `${naturalWidth(state.svg)}px` }} dangerouslySetInnerHTML={{ __html: state.svg }} />}
       {state.status === "error" && (
         <div className="sk-diagram-fallback" role="note">
           This diagram couldn't be drawn on this device.{caption ? ` It shows: ${caption}` : ""}
